@@ -56,7 +56,8 @@
         "src/lib/human.js",
         "src/lib/selector.js",
         "src/lib/fallback.js",
-        "src/lib/server-error.js"
+        "src/lib/server-error.js",
+        "src/lib/watch.js"
       ],
       "matches": ["<all_urls>"]
     }

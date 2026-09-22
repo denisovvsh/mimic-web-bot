@@ -9,26 +9,92 @@ body {
   padding: 12px 14px 24px;
 }
 
-header h1 {
-  margin: 0;
-  font-size: 18px;
-}
-
-#status {
-  min-height: 2.4em;
-  margin: 6px 0 0;
-  color: #9a3412;
-}
-
 section {
   margin-top: 16px;
   padding-top: 10px;
   border-top: 1px solid #d0d5dd;
 }
 
-h2 {
+section:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.mode-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 16px;
+  padding-top: 10px;
+  border-top: 1px solid #d0d5dd;
+  margin-bottom: 12px;
+}
+
+.mode-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #d0d5dd;
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.mode-tab.active {
+  background: #dbeafe;
+  color: #1e293b;
+  border-color: #93c5fd;
+}
+
+h2,
+details summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0 0 8px;
   font-size: 14px;
+  font-weight: 700;
+}
+
+details summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+details summary::-webkit-details-marker {
+  display: none;
+}
+
+details summary::before {
+  content: '▸';
+}
+
+details[open] summary::before {
+  content: '▾';
+}
+
+.indicator {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.indicator.on {
+  background: #166534;
+  color: #fff;
+}
+
+.indicator.off {
+  background: #52525b;
+  color: #fff;
+}
+
+.indicator.wait {
+  background: #9a3412;
+  color: #fff;
 }
 
 label {
@@ -59,6 +125,20 @@ input, textarea {
 
 .field {
   margin: 8px 0;
+}
+
+.selector-miss {
+  margin: 4px 0 0;
+  color: #b42318;
+  font-size: 12px;
+}
+
+.selector-miss[hidden] {
+  display: none;
+}
+
+.feature .selector-miss {
+  flex-basis: 100%;
 }
 
 .check {

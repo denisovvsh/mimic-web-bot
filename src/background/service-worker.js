@@ -1,4 +1,4 @@
-import { mergeSettings } from '../lib/defaults.js';
+import { mergeSettings, migrateRootMonitor, settingsForPage } from '../lib/defaults.js';
 import { audioFilename } from '../lib/utterance.js';
 import {
   formatClock,
@@ -7,6 +7,7 @@ import {
   transcriptFilename,
 } from '../lib/transcript.js';
 import { completeChat, transcribe } from '../lib/openrouter.js';
+import { samePage } from '../lib/watch.js';
 import {
   escapeHtml,
   fitCaption,
@@ -19,6 +20,7 @@ const STT_FAIL = '(фрагмент не расшифрован)';
 let recording = null;
 let mixed = false;
 let warnedNoKey = false;
+let monitorWatch = null;
 let sessionLoaded = false;
 let loadingSession = null;
 let transcriptQueue = Promise.resolve();
@@ -26,7 +28,7 @@ let transcriptQueue = Promise.resolve();
 async function ensureSession() {
   if (sessionLoaded) return;
   if (!loadingSession) {
-    loadingSession = chrome.storage.session.get('recordingSession')
+    loadingSession = chrome.storage.session.get(['recordingSession', 'monitorWatch'])
       .then((stored) => {
         if (sessionLoaded) return;
         const saved = stored?.recordingSession;
@@ -34,7 +36,9 @@ async function ensureSession() {
           recording = saved.recording;
           mixed = Boolean(saved.mixed);
         }
+        monitorWatch = stored?.monitorWatch || null;
         sessionLoaded = true;
+        publishIndicators();
       })
       .catch(() => {
         sessionLoaded = true;
@@ -46,7 +50,8 @@ async function ensureSession() {
 async function persistSession() {
   sessionLoaded = true;
   const recordingSession = recording ? { recording, mixed } : null;
-  await chrome.storage.session.set({ recordingSession }).catch(() => {});
+  await chrome.storage.session.set({ recordingSession, monitorWatch }).catch(() => {});
+  await publishIndicators();
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -55,9 +60,22 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  ensureSession().then(() => {
-    if (recording?.tabId === tabId) stopRecording();
-  });
+  ensureSession().then(async () => {
+    if (recording?.tabId === tabId) await stopRecording();
+    if (monitorWatch?.active && monitorWatch.tabId === tabId) {
+      await pauseMonitor('вкладка закрыта');
+    }
+  }).catch(() => {});
+});
+
+let tabUpdateChain = Promise.resolve();
+
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status !== 'loading' && info.status !== 'complete') return;
+  tabUpdateChain = tabUpdateChain
+    .then(() => ensureSession())
+    .then(() => onTabUpdated(tabId, info, tab))
+    .catch(() => {});
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -69,7 +87,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
       type: 'settings',
       settings: changes.settings.newValue,
     }).catch(() => {});
-  });
+  }).catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -84,7 +102,22 @@ async function handleMessage(message, sender) {
   await ensureSession();
   switch (message?.type) {
     case 'status-get':
-      return { ok: true, recording, mixed };
+      return {
+        ok: true,
+        recording,
+        mixed,
+        recordingOn: Boolean(recording),
+        recordingTabId: recording?.tabId ?? null,
+        monitor: monitorPhase(),
+        monitorWatch: monitorWatch
+          ? {
+            active: Boolean(monitorWatch.active),
+            url: monitorWatch.url || '',
+            tabId: monitorWatch.tabId ?? null,
+            phase: monitorWatch.phase || 'off',
+          }
+          : null,
+      };
     case 'recording-start':
       return startRecording(message);
     case 'recording-stop':
@@ -93,7 +126,7 @@ async function handleMessage(message, sender) {
       if (recording) return stopRecording();
       return { ok: true };
     case 'audio-chunk':
-      await saveAudioChunk(message);
+      await saveAudioChunk(message, sender);
       return { ok: true };
     case 'fallback-mixed':
       return enableMixed(message.speakers || []);
@@ -107,11 +140,13 @@ async function handleMessage(message, sender) {
       }
       return { ok: true };
     case 'monitor-start':
-      await deliverPage(message.tabId, { type: 'monitor-start' });
-      return { ok: true };
+      return beginMonitor(message.tabId);
     case 'monitor-stop':
-      await chrome.tabs.sendMessage(message.tabId, { target: 'page', type: 'monitor-stop' }).catch(() => {});
-      return { ok: true };
+      return endMonitor(message.tabId);
+    case 'conference-ended':
+      if (!recording || (sender.tab?.id && sender.tab.id !== recording.tabId)) return { ok: true };
+      await status(message.reason || 'Конференция завершена');
+      return stopRecording();
     case 'macro-record-start':
       await deliverPage(message.tabId, { type: 'macro-record-start' });
       return { ok: true };
@@ -159,9 +194,143 @@ async function status(text) {
   await chrome.runtime.sendMessage({ type: 'status', text }).catch(() => {});
 }
 
+function monitorPhase() {
+  if (!monitorWatch?.active) return 'off';
+  return monitorWatch.phase === 'waiting' ? 'wait' : 'on';
+}
+
+async function publishIndicators() {
+  await chrome.runtime.sendMessage({
+    type: 'indicators',
+    monitor: monitorPhase(),
+    recordingOn: Boolean(recording),
+    recordingTabId: recording?.tabId ?? null,
+    monitorWatch: monitorWatch
+      ? {
+        active: Boolean(monitorWatch.active),
+        url: monitorWatch.url || '',
+        tabId: monitorWatch.tabId ?? null,
+        phase: monitorWatch.phase || 'off',
+      }
+      : null,
+  }).catch(() => {});
+}
+
+async function stopMonitorTab(tabId) {
+  if (!tabId) return;
+  await chrome.tabs.sendMessage(tabId, { target: 'page', type: 'monitor-stop' }).catch(() => {});
+}
+
+async function beginMonitor(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab?.url) return { ok: false, error: 'Нет адреса вкладки' };
+  await adoptRootMonitor(tab.url);
+  const previousId = monitorWatch?.active ? monitorWatch.tabId : null;
+  if (previousId && previousId !== tabId) await stopMonitorTab(previousId);
+  const response = await askPage(tabId, { type: 'monitor-start' });
+  if (response?.ok === false) {
+    if (previousId && previousId !== tabId) {
+      monitorWatch = null;
+      await persistSession();
+    }
+    return response;
+  }
+  monitorWatch = { active: true, url: tab.url, tabId, phase: 'on', navigating: false };
+  await persistSession();
+  await status('Мониторинг включён');
+  return { ok: true };
+}
+
+async function endMonitor(tabId) {
+  const watchedId = monitorWatch?.tabId;
+  monitorWatch = null;
+  await persistSession();
+  await stopMonitorTab(watchedId);
+  if (tabId && tabId !== watchedId) await stopMonitorTab(tabId);
+  await status('Мониторинг выключен');
+  return { ok: true };
+}
+
+async function pauseMonitor(reason) {
+  if (!monitorWatch?.active) return;
+  const url = monitorWatch.url;
+  monitorWatch = { ...monitorWatch, tabId: null, phase: 'waiting', navigating: false };
+  await persistSession();
+  await status(`Мониторинг остановлен: ${reason}`);
+  const settings = await getSettings();
+  if (!settings.telegramToken || !settings.telegramChatId) return;
+  try {
+    await sendMessage(
+      settings.telegramToken,
+      settings.telegramChatId,
+      `Мониторинг остановлен: ${reason}`,
+      { url },
+    );
+  } catch (error) {
+    await status(`Telegram: ${error.message}`);
+  }
+}
+
+async function resumeMonitor(tabId, url) {
+  if (!monitorWatch?.active || monitorWatch.phase !== 'waiting') return;
+  if (!samePage(url, monitorWatch.url)) return;
+  const response = await askPage(tabId, { type: 'monitor-start' });
+  if (!monitorWatch?.active || monitorWatch.phase !== 'waiting') return;
+  if (response?.ok === false) return;
+  monitorWatch = { ...monitorWatch, tabId, phase: 'on', navigating: false };
+  await persistSession();
+  await status('Мониторинг возобновлён');
+}
+
+async function askPage(tabId, message) {
+  try {
+    return await deliverPage(tabId, message);
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
+async function onTabUpdated(tabId, info, tab) {
+  if (info.status === 'loading') {
+    if (recording?.tabId === tabId) {
+      recording = { ...recording, navigating: true };
+      await persistSession();
+    }
+    if (monitorWatch?.active && monitorWatch.tabId === tabId && monitorWatch.phase === 'on') {
+      monitorWatch = { ...monitorWatch, navigating: true };
+      await persistSession();
+    }
+    return;
+  }
+  if (info.status !== 'complete' || !tab?.url) return;
+  if (recording?.tabId === tabId && recording.navigating) await stopRecording();
+  if (monitorWatch?.active && monitorWatch.tabId === tabId && monitorWatch.phase === 'on' && monitorWatch.navigating) {
+    if (!samePage(tab.url, monitorWatch.url)) {
+      await pauseMonitor('адрес вкладки изменился');
+      return;
+    }
+    monitorWatch = { ...monitorWatch, navigating: false };
+    await persistSession();
+    const response = await askPage(tabId, { type: 'monitor-start' });
+    if (!monitorWatch?.active || monitorWatch.tabId !== tabId || monitorWatch.phase !== 'on') return;
+    if (response?.ok === false) return;
+    await status('Мониторинг возобновлён');
+    return;
+  }
+  await resumeMonitor(tabId, tab.url);
+}
+
+async function adoptRootMonitor(url) {
+  const settings = await getSettings();
+  const migrated = migrateRootMonitor(settings, url);
+  if (migrated === settings) return;
+  await chrome.storage.local.set({ settings: migrated });
+}
+
 async function startRecording({ tabId, streamId }) {
+  if (recording?.tabId) await stopRecording();
   const sessionId = Date.now();
-  recording = { sessionId, tabId };
+  recording = { sessionId, tabId, navigating: false };
   mixed = false;
   warnedNoKey = false;
   await persistSession();
@@ -284,8 +453,11 @@ async function sendOffscreen(message) {
   if (lastError) throw lastError;
 }
 
-async function saveAudioChunk(message) {
+async function saveAudioChunk(message, sender) {
   if (!message?.buffer) return;
+  if (!recording) return;
+  if (message.sessionId && message.sessionId !== recording.sessionId) return;
+  if (sender?.tab?.id && sender.tab.id !== recording.tabId) return;
   const bytes = toBytes(message.buffer);
   if (bytes.byteLength < 64) return;
   const sessionId = message.sessionId || recording?.sessionId || Date.now();
@@ -358,7 +530,8 @@ async function appendTranscript(sessionId, line) {
 }
 
 async function onItemFound(message, sender) {
-  const settings = await getSettings();
+  const pageUrl = sender.tab?.url || message.url || '';
+  const settings = settingsForPage(await getSettings(), pageUrl);
   let text = JSON.stringify(message.data, null, 2);
   if (settings.aiEnabled) {
     if (!settings.openrouterKey) {
@@ -379,7 +552,7 @@ async function onItemFound(message, sender) {
   }
   if (settings.telegramToken && settings.telegramChatId) {
     try {
-      await sendMessage(settings.telegramToken, settings.telegramChatId, text);
+      await sendMessage(settings.telegramToken, settings.telegramChatId, text, { url: pageUrl });
     } catch (error) {
       await status(`Telegram: ${error.message}`);
     }

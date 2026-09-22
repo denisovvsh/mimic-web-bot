@@ -6,44 +6,46 @@
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
-  <header>
-    <h1>Mimic</h1>
-    <p id="status">Готово</p>
-  </header>
-
   <section>
-    <h2>Telegram</h2>
-    <label>Токен бота
-      <input id="telegramToken" type="password" autocomplete="off" spellcheck="false">
-    </label>
-    <label>Chat ID
-      <input id="telegramChatId" autocomplete="off" spellcheck="false">
-    </label>
+    <details id="panel-telegram">
+      <summary>Telegram</summary>
+      <label>Токен бота
+        <input id="telegramToken" type="password" autocomplete="off" spellcheck="false">
+      </label>
+      <label>ID чата уведомлений
+        <input id="telegramChatId" autocomplete="off" spellcheck="false">
+      </label>
+    </details>
   </section>
 
   <section>
-    <h2>OpenRouter</h2>
-    <label>API-ключ
-      <input id="openrouterKey" type="password" autocomplete="off" spellcheck="false">
-    </label>
-    <label>Модель чата
-      <input id="chatModel" autocomplete="off" spellcheck="false">
-    </label>
-    <label>Модель Whisper
-      <input id="sttModel" autocomplete="off" spellcheck="false">
-    </label>
-    <label>Язык расшифровки
-      <input id="sttLanguage" autocomplete="off" spellcheck="false">
-    </label>
-    <label class="check">
-      <input id="aiEnabled" type="checkbox">
-      Новые карточки прогонять через ИИ
-    </label>
-    <label>Промпт
-      <textarea id="aiPrompt" rows="4"></textarea>
-    </label>
+    <details id="panel-openrouter">
+      <summary>OpenRouter</summary>
+      <label>API-ключ
+        <input id="openrouterKey" type="password" autocomplete="off" spellcheck="false">
+      </label>
+      <label>Модель чата
+        <input id="chatModel" autocomplete="off" spellcheck="false">
+      </label>
+      <label>Модель транскрибации
+        <input id="sttModel" autocomplete="off" spellcheck="false">
+      </label>
+      <label>Язык для транскрибации
+        <input id="sttLanguage" autocomplete="off" spellcheck="false">
+      </label>
+    </details>
   </section>
 
+  <div class="mode-tabs" role="tablist">
+    <button type="button" class="mode-tab active" id="tab-monitor" data-mode="monitor" role="tab">
+      Мониторинг <span id="monitor-indicator" class="indicator off">Выключено</span>
+    </button>
+    <button type="button" class="mode-tab" id="tab-telemost" data-mode="telemost" role="tab">
+      Телемост <span id="rec-indicator" class="indicator off">Выключено</span>
+    </button>
+  </div>
+
+  <div id="pane-monitor">
   <section>
     <h2>Мониторинг</h2>
     <div class="field" data-field="parentSelector">
@@ -52,6 +54,7 @@
         <input id="parentSelector" spellcheck="false">
         <button type="button" data-pick="parentSelector">Прицел</button>
       </div>
+      <p class="selector-miss" data-miss="parentSelector" hidden></p>
     </div>
     <div class="field">
       <label for="itemSelector">Селектор элемента</label>
@@ -59,6 +62,7 @@
         <input id="itemSelector" spellcheck="false">
         <button type="button" data-pick="itemSelector">Прицел</button>
       </div>
+      <p class="selector-miss" data-miss="itemSelector" hidden></p>
     </div>
     <div class="field">
       <label for="captchaSelector">Селектор капчи</label>
@@ -71,6 +75,13 @@
     <button type="button" id="add-feature">Добавить признак</button>
     <label>Текст ошибки сервера
       <textarea id="errorText" rows="3"></textarea>
+    </label>
+    <label class="check">
+      <input id="aiEnabled" type="checkbox">
+      Новые карточки прогонять через ИИ
+    </label>
+    <label>Промпт
+      <textarea id="aiPrompt" rows="4"></textarea>
     </label>
     <div class="buttons">
       <button type="button" id="monitor-start">Следить</button>
@@ -92,7 +103,9 @@
     </label>
     <ol id="macro-steps"></ol>
   </section>
+  </div>
 
+  <div id="pane-telemost" hidden>
   <section>
     <h2>Телемост</h2>
     <div class="field">
@@ -101,6 +114,7 @@
         <input id="gridSelector" spellcheck="false">
         <button type="button" data-pick="gridSelector">Прицел</button>
       </div>
+      <p class="selector-miss" data-miss="gridSelector" hidden></p>
     </div>
     <div class="field">
       <label for="tileSelector">Плитка</label>
@@ -108,6 +122,7 @@
         <input id="tileSelector" spellcheck="false">
         <button type="button" data-pick="tileSelector">Прицел</button>
       </div>
+      <p class="selector-miss" data-miss="tileSelector" hidden></p>
     </div>
     <div class="field">
       <label for="speakingSelector">Признак речи</label>
@@ -115,6 +130,7 @@
         <input id="speakingSelector" spellcheck="false">
         <button type="button" data-pick="speakingSelector">Прицел</button>
       </div>
+      <p class="selector-miss" data-miss="speakingSelector" hidden></p>
     </div>
     <div class="field">
       <label for="nameSelector">Имя</label>
@@ -122,6 +138,7 @@
         <input id="nameSelector" spellcheck="false">
         <button type="button" data-pick="nameSelector">Прицел</button>
       </div>
+      <p class="selector-miss" data-miss="nameSelector" hidden></p>
     </div>
     <label>Свои маркеры
       <input id="localMarkers" spellcheck="false">
@@ -131,6 +148,7 @@
       <button type="button" id="rec-stop">Остановить</button>
     </div>
   </section>
+  </div>
 
   <script type="module" src="sidepanel.js"></script>
 </body>

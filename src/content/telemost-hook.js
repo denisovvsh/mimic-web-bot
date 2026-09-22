@@ -16,9 +16,7 @@
     onWindowMessage(event.data);
   });
 
-  boot().catch((error) => {
-    console.error('mimic hook', error);
-  });
+  boot().catch(() => {});
 
   function installPatches() {
     const Original = window.RTCPeerConnection;

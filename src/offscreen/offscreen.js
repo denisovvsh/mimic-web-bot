@@ -56,7 +56,9 @@ async function hold(streamId, nextSessionId) {
   };
   for (const track of audioTracks) {
     track.addEventListener('ended', () => {
-      chrome.runtime.sendMessage({ type: 'capture-ended' }).catch(() => {});
+      try {
+        chrome.runtime.sendMessage({ type: 'capture-ended' }).catch(() => {});
+      } catch { /* вкладка или документ уже закрыты */ }
     }, { once: true });
   }
   sessionId = nextSessionId || Date.now();

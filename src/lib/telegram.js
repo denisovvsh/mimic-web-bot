@@ -9,15 +9,51 @@ export function escapeAttr(value) {
   return escapeHtml(value).replace(/"/g, '&quot;');
 }
 
+export function pageLinkLabel(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}${parsed.search}`;
+  } catch {
+    return String(url || '');
+  }
+}
+
+export function appendPageLink(text, url) {
+  const body = escapeHtml(text);
+  const href = String(url || '').trim();
+  if (!href) return splitTelegramText(body);
+  const link = `<a href="${escapeAttr(href)}">${escapeHtml(pageLinkLabel(href))}</a>`;
+  if (link.length > TELEGRAM_MESSAGE_LIMIT) return splitTelegramText(body);
+  if (!body) return [link];
+  const room = TELEGRAM_MESSAGE_LIMIT - link.length - 1;
+  if (room < 1) return splitTelegramText(body);
+  if (body.length + 1 + link.length <= TELEGRAM_MESSAGE_LIMIT) return [`${body}\n${link}`];
+  const parts = [];
+  for (let index = 0; index < body.length; index += room) {
+    const chunk = body.slice(index, index + room);
+    const last = index + room >= body.length;
+    parts.push(last ? `${chunk}\n${link}` : chunk);
+  }
+  return parts;
+}
+
+function captionLink(url, label) {
+  return `<a href="${escapeAttr(url)}">${escapeHtml(label)}</a>`;
+}
+
 export function fitCaption(reason, url) {
-  const link = `<a href="${escapeAttr(url)}">открыть вкладку</a>`;
+  const href = String(url || '');
+  let link = '';
+  if (href) {
+    link = captionLink(href, pageLinkLabel(href) || 'открыть вкладку');
+    if (link.length > 980) link = captionLink(href, 'открыть вкладку');
+    if (link.length > 1024) link = '';
+  }
   let text = escapeHtml(reason || 'Сбой автоматизации');
-  let caption = `${text}\n${link}`;
-  if (caption.length <= 1024) return caption;
-  const budget = 1024 - link.length - 2;
-  text = `${text.slice(0, Math.max(0, budget - 1))}…`;
-  caption = `${text}\n${link}`;
-  return caption.slice(0, 1024);
+  if (!link) return text.slice(0, 1024);
+  const budget = 1024 - link.length - 1;
+  if (text.length > budget) text = budget > 1 ? `${text.slice(0, budget - 1)}…` : '';
+  return text ? `${text}\n${link}` : link;
 }
 
 async function readTelegram(response) {
@@ -45,9 +81,11 @@ export function splitTelegramText(text) {
   return parts;
 }
 
-export async function sendMessage(token, chatId, text) {
+export async function sendMessage(token, chatId, text, options = {}) {
+  const url = options.url || '';
+  const parts = url ? appendPageLink(text, url) : splitTelegramText(text);
   let last;
-  for (const part of splitTelegramText(text)) {
+  for (const part of parts) {
     const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -55,6 +93,7 @@ export async function sendMessage(token, chatId, text) {
         chat_id: chatId,
         text: part,
         disable_web_page_preview: true,
+        ...(url ? { parse_mode: 'HTML' } : {}),
       }),
     });
     last = await readTelegram(response);

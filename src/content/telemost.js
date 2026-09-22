@@ -1,6 +1,54 @@
 (() => {
-  if (globalThis.__mimicTelemost) return;
-  globalThis.__mimicTelemost = true;
+  const previous = globalThis.__mimicTelemostApi;
+  if (previous?.alive) {
+    let live = false;
+    try { live = previous.alive(); } catch { live = false; }
+    if (live) return;
+    try { previous.dispose(); } catch { /* старый контекст уже мёртв */ }
+  }
+
+  let disposed = false;
+
+  function alive() {
+    try {
+      return Boolean(chrome.runtime?.id);
+    } catch {
+      return false;
+    }
+  }
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    armed = false;
+    try { stopObserve(); } catch { /* наблюдатель уже снят */ }
+    try { chrome.runtime.onMessage.removeListener(onMessage); } catch { /* контекст снят */ }
+    try { window.removeEventListener('message', onWindowMessage); } catch { /* слушатель уже снят */ }
+    if (globalThis.__mimicTelemostApi?.dispose === dispose) globalThis.__mimicTelemostApi = null;
+  }
+
+  function reply(sendResponse, payload) {
+    try {
+      sendResponse(payload);
+    } catch {
+      dispose();
+    }
+  }
+
+  function notify(message) {
+    if (!alive()) {
+      dispose();
+      return Promise.resolve();
+    }
+    try {
+      return chrome.runtime.sendMessage(message).catch(() => {});
+    } catch {
+      dispose();
+      return Promise.resolve();
+    }
+  }
+
+  globalThis.__mimicTelemostApi = { alive, dispose };
 
   let telemost = {};
   let armed = false;
@@ -17,10 +65,28 @@
   }).catch(() => {});
   let fallbackSent = false;
   let fallbackAttemptAt = 0;
+  let seenMeeting = false;
+  let seenTiles = false;
+  let gridMissingSince = 0;
+  let endSent = false;
+  let meetingEnded = () => false;
+  let pageReadyAt = document.readyState === 'complete' ? Date.now() : 0;
+  document.addEventListener('readystatechange', () => {
+    if (document.readyState === 'complete') pageReadyAt = Date.now();
+  });
   const namesSeen = new Set();
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  import(chrome.runtime.getURL('src/lib/watch.js')).then((mod) => {
+    meetingEnded = mod.meetingEnded;
+  }).catch(() => {});
+
+  function onMessage(message, _sender, sendResponse) {
+    try {
     if (message?.target !== 'telemost') return;
+    if (!alive()) {
+      dispose();
+      return;
+    }
     if (message.type === 'arm') {
       telemost = message.settings?.telemost || {};
       armed = true;
@@ -33,12 +99,29 @@
         sessionId: message.sessionId,
       }, '*');
       startObserve();
-      sendResponse({ ok: true });
+      reply(sendResponse, { ok: true });
       return true;
     }
     if (message.type === 'settings') {
       telemost = message.settings?.telemost || telemost;
-      sendResponse({ ok: true });
+      reply(sendResponse, { ok: true });
+      return true;
+    }
+    if (message.type === 'selectors-check') {
+      const list = Array.isArray(message.selectors) ? message.selectors : [];
+      const states = list.map((selector) => {
+        try {
+          const value = String(selector || '').trim();
+          if (!value) return 'empty';
+          const found = document.querySelector(value);
+          if (found) return 'ok';
+          if (!pageReadyAt || Date.now() - pageReadyAt < 5000) return 'pending';
+          return 'missing';
+        } catch {
+          return 'invalid';
+        }
+      });
+      reply(sendResponse, { ok: true, states });
       return true;
     }
     if (message.type === 'disarm' || message.type === 'disarm-tracks') {
@@ -47,13 +130,22 @@
         armed = false;
         stopObserve();
       }
-      sendResponse({ ok: true });
+      reply(sendResponse, { ok: true });
       return true;
     }
     return false;
-  });
+    } catch {
+      try { dispose(); } catch { /* контекст снят */ }
+    }
+  }
 
-  window.addEventListener('message', (event) => {
+  chrome.runtime.onMessage.addListener(onMessage);
+  window.addEventListener('pagehide', () => {
+    try { dispose(); } catch { /* страница закрывается */ }
+  }, { once: true });
+
+  function onWindowMessage(event) {
+    try {
     if (event.source !== window || event.data?.source !== 'mimic-main') return;
     if (event.data.type === 'tracks') {
       remoteAudio = Number(event.data.remote) || 0;
@@ -61,7 +153,7 @@
       return;
     }
     if (event.data.type === 'audio' && event.data.buffer) {
-      chrome.runtime.sendMessage({
+      notify({
         type: 'audio-chunk',
         buffer: event.data.buffer,
         speaker: event.data.speaker,
@@ -69,13 +161,24 @@
         endedAt: event.data.endedAt,
         trackId: event.data.trackId,
         sessionId: event.data.sessionId,
-      }).catch(() => {});
+      });
     }
-  });
+    } catch {
+      try { dispose(); } catch { /* контекст снят */ }
+    }
+  }
+
+  window.addEventListener('message', onWindowMessage);
 
   function startObserve() {
     stopObserve();
-    observer = new MutationObserver(() => scan());
+    observer = new MutationObserver(() => {
+      try {
+        scan();
+      } catch {
+        try { dispose(); } catch { /* контекст снят */ }
+      }
+    });
     const root = document.documentElement || document;
     observer.observe(root, {
       subtree: true,
@@ -84,7 +187,15 @@
       attributeFilter: ['class', 'style', 'data-speaking'],
     });
     scanTimer = setInterval(() => {
-      if (armed) scan();
+      try {
+        if (!alive()) {
+          dispose();
+          return;
+        }
+        if (armed) scan();
+      } catch {
+        try { dispose(); } catch { /* контекст снят */ }
+      }
     }, 300);
     scan();
   }
@@ -98,8 +209,50 @@
   }
 
   function scan() {
-    if (!armed) return;
-    const tiles = findTiles();
+    if (!alive()) {
+      dispose();
+      return;
+    }
+    if (!armed || endSent) return;
+    const gridSelector = String(telemost.gridSelector || '').trim();
+    const gridRequired = Boolean(gridSelector);
+    let grid = document;
+    let gridFound = true;
+    if (gridRequired) {
+      try {
+        grid = document.querySelector(gridSelector);
+      } catch {
+        grid = null;
+      }
+      gridFound = Boolean(grid);
+    }
+    const tileSelector = String(telemost.tileSelector || '').trim();
+    const trackTiles = Boolean(tileSelector);
+    const tiles = grid ? findTiles(grid) : [];
+    if (trackTiles && tiles.length > 0) seenTiles = true;
+    const meetingVisible = gridRequired ? gridFound : trackTiles && tiles.length > 0;
+    if (meetingVisible) {
+      seenMeeting = true;
+      gridMissingSince = 0;
+    } else if (seenMeeting && (gridRequired || trackTiles)) {
+      if (!gridMissingSince) gridMissingSince = Date.now();
+      if (meetingEnded({
+        seenMeeting,
+        gridRequired,
+        gridFound,
+        seenTiles,
+        tileCount: tiles.length,
+        missingForMs: Date.now() - gridMissingSince,
+      })) {
+        endSent = true;
+        armed = false;
+        notify({
+          type: 'conference-ended',
+          reason: 'Сетка участников недоступна, запись остановлена',
+        });
+      }
+      return;
+    }
     const speakers = [];
     let remoteTiles = 0;
     for (const tile of tiles) {
@@ -116,7 +269,7 @@
     if (speakerKey !== lastSpeakerKey) {
       lastSpeakerKey = speakerKey;
       window.postMessage({ source: 'mimic-isolated', type: 'speakers', speakers }, '*');
-      chrome.runtime.sendMessage({ type: 'speakers', speakers }).catch(() => {});
+      notify({ type: 'speakers', speakers });
     }
     maybeFallback(remoteTiles);
   }
@@ -131,30 +284,21 @@
     })) return;
     if (Date.now() - fallbackAttemptAt < 2000) return;
     fallbackAttemptAt = Date.now();
-    chrome.runtime.sendMessage({
+    notify({
       type: 'fallback-mixed',
       speakers: [...namesSeen],
     }).then((response) => {
       if (response?.ok) fallbackSent = true;
-    }).catch(() => {});
+    });
   }
 
-  function findTiles() {
+  function findTiles(root) {
     const tileSelector = String(telemost.tileSelector || '').trim();
     if (tileSelector) {
       try {
-        return [...document.querySelectorAll(tileSelector)];
+        return [...root.querySelectorAll(tileSelector)];
       } catch {
         return [];
-      }
-    }
-    let root = document;
-    const gridSelector = String(telemost.gridSelector || '').trim();
-    if (gridSelector) {
-      try {
-        root = document.querySelector(gridSelector) || document;
-      } catch {
-        root = document;
       }
     }
     const tiles = [];

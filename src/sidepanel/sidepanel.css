@@ -1,0 +1,99 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+
+body {
+  margin: 0;
+  padding: 12px 14px 24px;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+#status {
+  min-height: 2.4em;
+  margin: 6px 0 0;
+  color: #9a3412;
+}
+
+section {
+  margin-top: 16px;
+  padding-top: 10px;
+  border-top: 1px solid #d0d5dd;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+label {
+  display: block;
+  margin: 8px 0;
+}
+
+input, textarea, button {
+  font: inherit;
+}
+
+input, textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+}
+
+.line {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.line input {
+  flex: 1;
+  margin-top: 0;
+}
+
+.field {
+  margin: 8px 0;
+}
+
+.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.check input {
+  width: auto;
+  margin: 0;
+}
+
+.buttons, .feature {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.feature input {
+  width: auto;
+  flex: 1;
+  margin: 0;
+}
+
+button {
+  cursor: pointer;
+}
+
+#macro-steps {
+  padding-left: 18px;
+}
+
+#macro-steps li {
+  margin: 4px 0;
+  word-break: break-word;
+}

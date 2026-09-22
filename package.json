@@ -1,0 +1,8 @@
+{
+  "name": "mimic-web-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

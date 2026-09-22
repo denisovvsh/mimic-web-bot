@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Mimic Web Bot</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header>
+    <h1>Mimic</h1>
+    <p id="status">Готово</p>
+  </header>
+
+  <section>
+    <h2>Telegram</h2>
+    <label>Токен бота
+      <input id="telegramToken" type="password" autocomplete="off" spellcheck="false">
+    </label>
+    <label>Chat ID
+      <input id="telegramChatId" autocomplete="off" spellcheck="false">
+    </label>
+  </section>
+
+  <section>
+    <h2>OpenRouter</h2>
+    <label>API-ключ
+      <input id="openrouterKey" type="password" autocomplete="off" spellcheck="false">
+    </label>
+    <label>Модель чата
+      <input id="chatModel" autocomplete="off" spellcheck="false">
+    </label>
+    <label>Модель Whisper
+      <input id="sttModel" autocomplete="off" spellcheck="false">
+    </label>
+    <label>Язык расшифровки
+      <input id="sttLanguage" autocomplete="off" spellcheck="false">
+    </label>
+    <label class="check">
+      <input id="aiEnabled" type="checkbox">
+      Новые карточки прогонять через ИИ
+    </label>
+    <label>Промпт
+      <textarea id="aiPrompt" rows="4"></textarea>
+    </label>
+  </section>
+
+  <section>
+    <h2>Мониторинг</h2>
+    <div class="field" data-field="parentSelector">
+      <label for="parentSelector">Селектор родителя</label>
+      <div class="line">
+        <input id="parentSelector" spellcheck="false">
+        <button type="button" data-pick="parentSelector">Прицел</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="itemSelector">Селектор элемента</label>
+      <div class="line">
+        <input id="itemSelector" spellcheck="false">
+        <button type="button" data-pick="itemSelector">Прицел</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="captchaSelector">Селектор капчи</label>
+      <div class="line">
+        <input id="captchaSelector" spellcheck="false">
+        <button type="button" data-pick="captchaSelector">Прицел</button>
+      </div>
+    </div>
+    <div id="features"></div>
+    <button type="button" id="add-feature">Добавить признак</button>
+    <label>Текст ошибки сервера
+      <textarea id="errorText" rows="3"></textarea>
+    </label>
+    <div class="buttons">
+      <button type="button" id="monitor-start">Следить</button>
+      <button type="button" id="monitor-stop">Стоп</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Макрос</h2>
+    <div class="buttons">
+      <button type="button" id="macro-rec">Записать макрос</button>
+      <button type="button" id="macro-stop">Стоп записи</button>
+      <button type="button" id="macro-play">Выполнить</button>
+      <button type="button" id="macro-clear">Очистить</button>
+    </div>
+    <label class="check">
+      <input id="runMacroOnNewItem" type="checkbox">
+      Запускать на новый элемент
+    </label>
+    <ol id="macro-steps"></ol>
+  </section>
+
+  <section>
+    <h2>Телемост</h2>
+    <div class="field">
+      <label for="gridSelector">Сетка участников</label>
+      <div class="line">
+        <input id="gridSelector" spellcheck="false">
+        <button type="button" data-pick="gridSelector">Прицел</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="tileSelector">Плитка</label>
+      <div class="line">
+        <input id="tileSelector" spellcheck="false">
+        <button type="button" data-pick="tileSelector">Прицел</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="speakingSelector">Признак речи</label>
+      <div class="line">
+        <input id="speakingSelector" spellcheck="false">
+        <button type="button" data-pick="speakingSelector">Прицел</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="nameSelector">Имя</label>
+      <div class="line">
+        <input id="nameSelector" spellcheck="false">
+        <button type="button" data-pick="nameSelector">Прицел</button>
+      </div>
+    </div>
+    <label>Свои маркеры
+      <input id="localMarkers" spellcheck="false">
+    </label>
+    <div class="buttons">
+      <button type="button" id="rec-start">Писать созвон</button>
+      <button type="button" id="rec-stop">Остановить</button>
+    </div>
+  </section>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

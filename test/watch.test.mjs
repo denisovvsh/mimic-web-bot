@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pathMatchesSelector } from '../src/lib/selector.js';
-import { isTelemostUrl, meetingEnded, pageKey, samePage } from '../src/lib/watch.js';
+import { isTelemostUrl, labelTracks, meetingEnded, pageKey, samePage, speakingByFrame } from '../src/lib/watch.js';
 import { adoptRootAi, migrateRootMonitor, settingsForPage } from '../src/lib/defaults.js';
 
 test('цели мониторинга не смешиваются между страницами', () => {
@@ -96,6 +96,47 @@ test('селектор и путь от родителя совпадают хв
   const directChild = 'div:nth-of-type(1) > section > div:nth-of-type(3)';
   assert.equal(pathMatchesSelector('div:nth-of-type(3)', directChild), true);
   assert.equal(pathMatchesSelector('div:nth-of-type(9)', directChild), false);
+});
+
+test('рамка подписывает только ту дорожку, которая звучит сейчас', () => {
+  const tracks = [
+    { id: 'a', local: false, speaker: '', hot: true },
+    { id: 'b', local: false, speaker: '', hot: false },
+  ];
+  assert.deepEqual(labelTracks(tracks, [{ name: 'Гость', local: false }]), [{ id: 'a', name: 'Гость' }]);
+  assert.deepEqual(
+    labelTracks([{ id: 'a', local: false, speaker: '', hot: false }], [{ name: 'Гость', local: false }]),
+    [],
+  );
+  assert.deepEqual(labelTracks(
+    [
+      { id: 'a', local: false, speaker: '', hot: true },
+      { id: 'b', local: false, speaker: '', hot: true },
+    ],
+    [{ name: 'Гость', local: false }],
+  ), []);
+  assert.deepEqual(
+    labelTracks([{ id: 'a', local: false, speaker: 'Гость', hot: true }], [{ name: 'Вадим', local: true }]),
+    [{ id: 'a', name: 'Вадим' }],
+  );
+});
+
+test('говорящая плитка — та, у которой рамка сменила стиль', () => {
+  const quiet = { name: 'Анна', local: false, style: '1px solid gray' };
+  const other = { name: 'Борис', local: false, style: '1px solid gray' };
+  const first = speakingByFrame([quiet, other], {});
+  assert.deepEqual(first.speakers, []);
+  const changed = speakingByFrame([
+    { ...quiet, style: '2px solid blue' },
+    other,
+  ], first.rest);
+  assert.deepEqual(changed.speakers, [{ name: 'Анна', local: false }]);
+  const back = speakingByFrame([quiet, other], changed.rest);
+  assert.deepEqual(back.speakers, []);
+  const alone = speakingByFrame([{ name: 'Вы', local: true, style: '1px solid gray' }], {});
+  assert.deepEqual(alone.speakers, []);
+  const aloneTalks = speakingByFrame([{ name: 'Вы', local: true, style: '2px solid blue' }], alone.rest);
+  assert.deepEqual(aloneTalks.speakers, [{ name: 'Вы', local: true }]);
 });
 
 test('телемост определяется по домену адреса', () => {

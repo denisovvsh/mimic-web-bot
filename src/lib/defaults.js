@@ -27,7 +27,6 @@ export const DEFAULT_SETTINGS = {
   telemost: {
     gridSelector: '',
     tileSelector: '',
-    speakingSelector: '',
     nameSelector: '',
     localMarkers: 'Вы, You',
   },

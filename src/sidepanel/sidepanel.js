@@ -16,7 +16,7 @@ const TEXT_FIELDS = [
   'localMarkers',
 ];
 const GLOBAL_FIELDS = TEXT_FIELDS.filter((id) => !MONITOR_FIELDS.includes(id) && id !== 'localMarkers');
-const TELEMOST_FIELDS = ['gridSelector', 'tileSelector', 'speakingSelector', 'nameSelector'];
+const TELEMOST_FIELDS = ['gridSelector', 'tileSelector', 'nameSelector'];
 const featuresNode = document.querySelector('#features');
 const macroNode = document.querySelector('#macro-steps');
 let boundTabId = null;
@@ -482,9 +482,8 @@ async function checkLiveSelectors() {
       });
     }
   }
-  showMiss(document.querySelector('[data-miss="speakingSelector"]'), '');
   if (!recordingHere) return;
-  const telemostFields = TELEMOST_FIELDS.filter((id) => id !== 'speakingSelector');
+  const telemostFields = TELEMOST_FIELDS;
   const telemostInputs = telemostFields.map((id) => document.getElementById(id));
   const result = await probeSelectors('telemost', telemostInputs.map((input) => input?.value || ''));
   if (gen !== selectorCheckGen || !result?.ok || !Array.isArray(result.states)) return;

@@ -246,20 +246,33 @@
       ctl.setSpeaker(info.id, name);
     }
 
+    let labelTracks = () => [];
+    import(chrome.runtime.getURL('src/lib/watch.js')).then((mod) => {
+      labelTracks = mod.labelTracks;
+    }).catch(() => {});
+
     function bindSpeakers() {
-      const hot = [...tracks.values()].filter((info) => info.hot && !info.speaker);
-      const used = new Set([...tracks.values()].map((info) => info.speaker).filter(Boolean));
-      const free = domSpeakers.filter((speaker) => speaker.name && !used.has(speaker.name));
-      if (hot.length === 1 && free.length === 1) {
-        assign(hot[0], free[0].name);
-        return;
+      const rows = [...tracks.values()].map((info) => ({
+        id: info.id,
+        local: info.local,
+        speaker: info.speaker,
+        hot: info.hot,
+      }));
+      for (const assignment of labelTracks(rows, domSpeakers)) {
+        const info = tracks.get(assignment.id);
+        if (info) assign(info, assignment.name);
       }
-      const hotLocal = hot.filter((info) => info.local);
-      const hotRemote = hot.filter((info) => !info.local);
-      const freeLocal = free.filter((speaker) => speaker.local);
-      const freeRemote = free.filter((speaker) => !speaker.local);
-      if (hotLocal.length === 1 && freeLocal.length === 1) assign(hotLocal[0], freeLocal[0].name);
-      if (hotRemote.length === 1 && freeRemote.length === 1) assign(hotRemote[0], freeRemote[0].name);
+    }
+
+    function rememberSpeakers() {
+      for (const info of tracks.values()) {
+        if (info.track.readyState !== 'live') {
+          info.hot = false;
+          continue;
+        }
+        info.hot = rms(info.analyser, info.bucket) >= SPEECH_RMS;
+      }
+      bindSpeakers();
     }
 
     function labelOf(info, action) {
@@ -344,6 +357,7 @@
       }
       if (data.type === 'speakers') {
         domSpeakers = Array.isArray(data.speakers) ? data.speakers : [];
+        rememberSpeakers();
         return;
       }
       if (data.type === 'disarm' || data.type === 'disarm-tracks') {
@@ -370,7 +384,6 @@
           if (info.hot) ctl.noteSpeech(info.id, now, info.speaker || undefined);
           else ctl.noteSilence(info.id, now);
         }
-        bindSpeakers();
         ctl.tick(now);
         drain();
       }

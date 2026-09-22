@@ -70,6 +70,8 @@
   let gridMissingSince = 0;
   let endSent = false;
   let meetingEnded = () => false;
+  let speakingByFrame = (tiles, rest) => ({ speakers: [], rest });
+  let frameRest = {};
   let pageReadyAt = document.readyState === 'complete' ? Date.now() : 0;
   document.addEventListener('readystatechange', () => {
     if (document.readyState === 'complete') pageReadyAt = Date.now();
@@ -78,6 +80,7 @@
 
   import(chrome.runtime.getURL('src/lib/watch.js')).then((mod) => {
     meetingEnded = mod.meetingEnded;
+    speakingByFrame = mod.speakingByFrame;
   }).catch(() => {});
 
   function onMessage(message, _sender, sendResponse) {
@@ -128,6 +131,7 @@
       window.postMessage({ source: 'mimic-isolated', type: message.type }, '*');
       if (message.type === 'disarm') {
         armed = false;
+        frameRest = {};
         stopObserve();
       }
       reply(sendResponse, { ok: true });
@@ -253,7 +257,7 @@
       }
       return;
     }
-    const speakers = [];
+    const styled = [];
     let remoteTiles = 0;
     for (const tile of tiles) {
       const name = tileName(tile);
@@ -263,8 +267,11 @@
         remoteTiles += 1;
         namesSeen.add(name);
       }
-      if (isSpeaking(tile)) speakers.push({ name, local });
+      styled.push({ name, local, style: frameSignature(tile) });
     }
+    const judged = speakingByFrame(styled, frameRest);
+    frameRest = judged.rest;
+    const speakers = judged.speakers;
     const speakerKey = JSON.stringify(speakers);
     if (speakerKey !== lastSpeakerKey) {
       lastSpeakerKey = speakerKey;
@@ -342,19 +349,20 @@
     return markers.some((marker) => name === marker || name.startsWith(`${marker} `));
   }
 
-  function isSpeaking(el) {
-    const speakingSelector = String(telemost.speakingSelector || '').trim();
-    if (speakingSelector) {
-      try {
-        return el.matches(speakingSelector) || Boolean(el.querySelector(speakingSelector));
-      } catch {
-        return false;
-      }
-    }
-    const nodes = [el, ...el.querySelectorAll('[class], [style]')].slice(0, 40);
-    return nodes.some((node) => {
-      const blob = `${node.className || ''} ${[...node.attributes].map((attr) => `${attr.name}=${attr.value}`).join(' ')}`;
-      return /speak|voice-active|mic-on|audio-level|active-speaker/i.test(blob);
-    });
+  function frameSignature(el) {
+    const style = getComputedStyle(el);
+    return [
+      style.borderTopWidth,
+      style.borderRightWidth,
+      style.borderBottomWidth,
+      style.borderLeftWidth,
+      style.borderTopColor,
+      style.borderRightColor,
+      style.borderBottomColor,
+      style.borderLeftColor,
+      style.outlineWidth,
+      style.outlineColor,
+      style.boxShadow,
+    ].join('|');
   }
 })();

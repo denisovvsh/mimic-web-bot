@@ -82,7 +82,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local' || !changes.settings) return;
   ensureSession().then(() => {
     if (!recording?.tabId) return;
-    chrome.tabs.sendMessage(recording.tabId, {
+    messageFrames(recording.tabId, {
       target: 'telemost',
       type: 'settings',
       settings: changes.settings.newValue,
@@ -162,12 +162,17 @@ async function handleMessage(message, sender) {
       return { ok: true };
     }
     case 'pick-start':
-      await deliverPage(message.tabId, {
+      await deliverPick(message.tabId, {
         type: 'pick-start',
         field: message.field,
         featureIndex: message.featureIndex ?? null,
       });
       return { ok: true };
+    case 'picked':
+      disarmPick(sender.tab?.id).catch(() => {});
+      return { ok: true };
+    case 'selectors-probe':
+      return probeFrames(message);
     case 'item-found':
       await onItemFound(message, sender);
       return { ok: true };
@@ -338,15 +343,8 @@ async function startRecording({ tabId, streamId }) {
   await chrome.action.setBadgeText({ text: 'REC' });
   let heard = Boolean(streamId);
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['src/content/telemost-hook.js'],
-      world: 'MAIN',
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['src/content/telemost.js'],
-    });
+    await injectFrames(tabId, ['src/content/telemost-hook.js'], 'MAIN');
+    const scriptFrames = await injectFrames(tabId, ['src/content/telemost.js']);
     if (streamId) {
       try {
         await ensureOffscreen();
@@ -357,24 +355,28 @@ async function startRecording({ tabId, streamId }) {
       }
     }
     const settings = await getSettings();
-    let armed = false;
+    const armTargets = scriptFrames.length ? scriptFrames : await tabFrames(tabId);
+    let pending = [...armTargets];
     let lastError = null;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        await chrome.tabs.sendMessage(tabId, {
-          target: 'telemost',
-          type: 'arm',
-          sessionId,
-          settings,
-        });
-        armed = true;
-        break;
-      } catch (error) {
-        lastError = error;
-        await delay(80);
+    for (let attempt = 0; attempt < 5 && pending.length; attempt += 1) {
+      const failed = [];
+      for (const frameId of pending) {
+        try {
+          await chrome.tabs.sendMessage(tabId, {
+            target: 'telemost',
+            type: 'arm',
+            sessionId,
+            settings,
+          }, { frameId });
+        } catch (error) {
+          lastError = error;
+          failed.push(frameId);
+        }
       }
+      pending = failed;
+      if (pending.length) await delay(80);
     }
-    if (!armed) throw lastError || new Error('Вкладка Телемоста не отвечает');
+    if (pending.length === armTargets.length) throw lastError || new Error('Вкладка Телемоста не отвечает');
   } catch (error) {
     recording = null;
     mixed = false;
@@ -396,7 +398,7 @@ async function stopRecording() {
   await persistSession();
   await chrome.action.setBadgeText({ text: '' });
   if (current?.tabId) {
-    await chrome.tabs.sendMessage(current.tabId, { target: 'telemost', type: 'disarm' }).catch(() => {});
+    await messageFrames(current.tabId, { target: 'telemost', type: 'disarm' });
   }
   await sendOffscreen({ type: 'stop' }).catch(() => {});
   await chrome.offscreen.closeDocument().catch(() => {});
@@ -420,10 +422,10 @@ async function enableMixed(speakers) {
   }
   mixed = true;
   await persistSession();
-  await chrome.tabs.sendMessage(recording.tabId, {
+  await messageFrames(recording.tabId, {
     target: 'telemost',
     type: 'disarm-tracks',
-  }).catch(() => {});
+  });
   await status('Один общий аудиотрек: пишу смешанный звук');
   return { ok: true };
 }
@@ -592,10 +594,118 @@ async function deliverPage(tabId, message) {
     target: { tabId },
     files: ['src/content/page.js'],
   });
+  return sendPage(tabId, 0, message);
+}
+
+async function tabFrames(tabId) {
+  try {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId });
+    const ids = (frames || []).map((frame) => frame.frameId);
+    if (ids.length) return ids;
+  } catch {
+    /* список кадров недоступен */
+  }
+  return [0];
+}
+
+async function injectFrames(tabId, files, world) {
+  const injected = [];
+  for (const frameId of await tabFrames(tabId)) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        files,
+        ...(world ? { world } : {}),
+      });
+      injected.push(frameId);
+    } catch {
+      /* кадр недоступен */
+    }
+  }
+  return injected;
+}
+
+async function messageFrames(tabId, message) {
+  const frames = await tabFrames(tabId);
+  await Promise.all(frames.map((frameId) =>
+    chrome.tabs.sendMessage(tabId, message, { frameId }).catch(() => {})
+  ));
+}
+
+function betterState(left, right) {
+  const rank = { ok: 5, pending: 4, invalid: 3, missing: 2, empty: 1 };
+  return (rank[right] || 0) > (rank[left] || 0) ? right : (left || right || '');
+}
+
+function mergeStates(rows) {
+  let merged = [];
+  for (const row of rows) {
+    const list = Array.isArray(row) ? row : [];
+    const count = Math.max(merged.length, list.length);
+    const next = [];
+    for (let index = 0; index < count; index += 1) next[index] = betterState(merged[index], list[index]);
+    merged = next;
+  }
+  return merged;
+}
+
+async function probeFrames(message) {
+  const frames = await tabFrames(message.tabId);
+  const replies = [];
+  for (const frameId of frames) {
+    try {
+      const reply = await chrome.tabs.sendMessage(message.tabId, {
+        target: message.frameTarget,
+        type: 'selectors-check',
+        selectors: message.selectors,
+        parent: message.parent,
+        item: message.item,
+        features: message.features,
+      }, { frameId });
+      if (reply?.ok) replies.push(reply);
+    } catch {
+      /* в этом кадре скрипта нет */
+    }
+  }
+  if (!replies.length) return { ok: false };
+  if (message.frameTarget === 'page') {
+    return {
+      ok: true,
+      parent: mergeStates(replies.map((reply) => [reply.parent]))[0],
+      item: mergeStates(replies.map((reply) => [reply.item]))[0],
+      features: mergeStates(replies.map((reply) => reply.features)),
+    };
+  }
+  return { ok: true, states: mergeStates(replies.map((reply) => reply.states)) };
+}
+
+async function deliverPick(tabId, message) {
+  const injected = await injectFrames(tabId, ['src/content/page.js']);
+  if (!injected.length) throw new Error('Не удалось связаться со страницей');
+  let lastError = null;
+  let delivered = false;
+  for (const frameId of injected) {
+    try {
+      await sendPage(tabId, frameId, message);
+      delivered = true;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (!delivered) throw lastError || new Error('Не удалось связаться со страницей');
+  return { ok: true };
+}
+
+async function disarmPick(tabId) {
+  if (!tabId) return;
+  await messageFrames(tabId, { target: 'page', type: 'pick-stop' });
+}
+
+async function sendPage(tabId, frameId, message) {
   let lastError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      return await chrome.tabs.sendMessage(tabId, { target: 'page', ...message });
+      return await chrome.tabs.sendMessage(tabId, { target: 'page', ...message }, { frameId });
     } catch (error) {
       lastError = error;
       await delay(80);

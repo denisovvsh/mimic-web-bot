@@ -156,6 +156,10 @@
 
     async function handle(message) {
       if (message.type === 'pick-start') return startPick(message.field, message.featureIndex);
+      if (message.type === 'pick-stop') {
+        stopPick();
+        return { ok: true };
+      }
       if (message.type === 'monitor-start') return startMonitor();
       if (message.type === 'monitor-stop') {
         stopMonitor();
@@ -175,18 +179,41 @@
       box.id = 'mimic-hover-box';
       box.style.cssText = [
         'position:fixed',
+        'margin:0',
+        'inset:auto',
+        'padding:0',
+        'overflow:hidden',
         'pointer-events:none',
         'z-index:2147483647',
         'border:2px solid #d92d20',
         'background:rgba(217,45,32,.18)',
         'box-sizing:border-box',
+        'width:0',
+        'height:0',
       ].join(';');
-      (document.documentElement || document.body).appendChild(box);
-      document.addEventListener('mousemove', onPickMove, true);
-      document.addEventListener('click', onPickClick, true);
+      mountPickBox();
+      window.addEventListener('message', onPickResult);
+      window.postMessage({ source: 'mimic-isolated', type: 'pick-arm' }, '*');
+      document.addEventListener('pointermove', onPickMove, true);
+      document.addEventListener('pointerdown', onPickPointerDown, true);
       document.addEventListener('keydown', onPickKey, true);
       status('Наведите на элемент и кликните');
       return { ok: true };
+    }
+
+    function mountPickBox() {
+      if (!box) return;
+      const parent = document.documentElement || document.body;
+      if (!parent) return;
+      if (box.parentNode !== parent) parent.appendChild(box);
+      try {
+        if (typeof box.showPopover === 'function') {
+          box.popover = 'manual';
+          if (!box.matches(':popover-open')) box.showPopover();
+        }
+      } catch {
+        /* рамка остаётся в документе */
+      }
     }
 
     function unlisten(type, handler) {
@@ -203,8 +230,9 @@
           dispose();
           return;
         }
-        const el = document.elementFromPoint(event.clientX, event.clientY);
-        if (!el || el === box || !box) return;
+        const el = pickElement(event);
+        if (!el || !box) return;
+        mountPickBox();
         const rect = el.getBoundingClientRect();
         box.style.left = `${rect.left}px`;
         box.style.top = `${rect.top}px`;
@@ -215,26 +243,63 @@
       }
     }
 
-    function onPickClick(event) {
+    function pickElement(event) {
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      for (const node of path) {
+        if (node instanceof Element && node !== box && node.id !== 'mimic-hover-box') return node;
+      }
+      const el = document.elementFromPoint(event.clientX, event.clientY);
+      if (!el || el === box || el.id === 'mimic-hover-box') return null;
+      return el;
+    }
+
+    function finishPick(selected) {
+      const current = picker;
+      if (!current) return;
+      notify({
+        type: 'picked',
+        field: current.field,
+        featureIndex: current.featureIndex,
+        selector: selected,
+      });
+      stopPick();
+      status(selected ? `Селектор: ${selected}` : 'Не удалось построить селектор');
+    }
+
+    function onPickResult(event) {
+      try {
+        if (event.source !== window || event.data?.source !== 'mimic-main') return;
+        if (!alive()) {
+          dispose();
+          return;
+        }
+        if (event.data.type === 'pick-cancel') {
+          stopPick();
+          return;
+        }
+        if (event.data.type !== 'pick-result' || !picker) return;
+        finishPick(event.data.selector || '');
+      } catch {
+        try { dispose(); } catch { /* контекст снят */ }
+      }
+    }
+
+    function onPickPointerDown(event) {
       try {
         if (!alive()) {
           dispose();
           return;
         }
-        if (!picker) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        const el = document.elementFromPoint(event.clientX, event.clientY);
-        const selected = uniqueSelector(el);
-        notify({
-          type: 'picked',
-          field: picker.field,
-          featureIndex: picker.featureIndex,
-          selector: selected,
-        });
-        stopPick();
-        status(selected ? `Селектор: ${selected}` : 'Не удалось построить селектор');
+        if (!picker || event.button !== 0) return;
+        const onTelemost = location.hostname === 'telemost.yandex.ru';
+        if (!onTelemost) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+        }
+        const selected = uniqueSelector(pickElement(event));
+        if (onTelemost && !selected) return;
+        finishPick(selected);
       } catch {
         try { dispose(); } catch { /* контекст снят */ }
       }
@@ -256,8 +321,10 @@
       picker = null;
       try { box?.remove(); } catch { /* контекст снят */ }
       box = null;
-      unlisten('mousemove', onPickMove);
-      unlisten('click', onPickClick);
+      try { window.removeEventListener('message', onPickResult); } catch { /* слушатель уже снят */ }
+      window.postMessage({ source: 'mimic-isolated', type: 'pick-disarm' }, '*');
+      unlisten('pointermove', onPickMove);
+      unlisten('pointerdown', onPickPointerDown);
       unlisten('keydown', onPickKey);
     }
 

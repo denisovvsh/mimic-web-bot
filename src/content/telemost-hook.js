@@ -10,9 +10,108 @@
   };
   let onWindowMessage = (data) => pendingMessages.push(data);
 
+  let pickOn = false;
+  let pickBox = null;
+  let uniqueSelector = () => '';
+  const selectorReady = import(chrome.runtime.getURL('src/lib/selector.js'))
+    .then((mod) => { uniqueSelector = mod.uniqueSelector; })
+    .catch(() => {});
+
+  function pickTarget(event) {
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    for (const node of path) {
+      if (node instanceof Element && node.id !== 'mimic-hover-box') return node;
+    }
+    const found = document.elementFromPoint(event.clientX, event.clientY);
+    if (found instanceof Element && found.id !== 'mimic-hover-box') return found;
+    return null;
+  }
+
+  function showPickBox(el) {
+    if (!pickBox?.isConnected) {
+      pickBox = document.getElementById('mimic-hover-box');
+      if (!pickBox) {
+        pickBox = document.createElement('div');
+        pickBox.id = 'mimic-hover-box';
+        pickBox.style.cssText = [
+          'position:fixed',
+          'margin:0',
+          'inset:auto',
+          'padding:0',
+          'overflow:hidden',
+          'pointer-events:none',
+          'z-index:2147483647',
+          'border:2px solid #d92d20',
+          'background:rgba(217,45,32,.18)',
+          'box-sizing:border-box',
+          'width:0',
+          'height:0',
+        ].join(';');
+      }
+      const parent = document.documentElement || document.body;
+      if (pickBox.parentNode !== parent) parent.append(pickBox);
+      try {
+        if (typeof pickBox.showPopover === 'function') {
+          pickBox.popover = 'manual';
+          if (!pickBox.matches(':popover-open')) pickBox.showPopover();
+        }
+      } catch {
+        /* рамка остаётся в документе */
+      }
+    }
+    const rect = el.getBoundingClientRect();
+    pickBox.style.left = `${rect.left}px`;
+    pickBox.style.top = `${rect.top}px`;
+    pickBox.style.width = `${rect.width}px`;
+    pickBox.style.height = `${rect.height}px`;
+  }
+
+  function clearPick() {
+    pickOn = false;
+    try { pickBox?.remove(); } catch { /* узел уже снят */ }
+    pickBox = null;
+  }
+
+  document.addEventListener('pointermove', (event) => {
+    if (!pickOn) return;
+    const el = pickTarget(event);
+    if (el) showPickBox(el);
+  }, true);
+
+  document.addEventListener('pointerdown', (event) => {
+    if (!pickOn || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    const el = pickTarget(event);
+    clearPick();
+    selectorReady.then(() => {
+      let selector = '';
+      try { selector = el ? uniqueSelector(el) : ''; } catch { selector = ''; }
+      window.postMessage({ source: 'mimic-main', type: 'pick-result', selector }, '*');
+    });
+  }, true);
+
+  document.addEventListener('keydown', (event) => {
+    if (!pickOn || event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    clearPick();
+    window.postMessage({ source: 'mimic-main', type: 'pick-cancel' }, '*');
+  }, true);
+
   installPatches();
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.data?.source !== 'mimic-isolated') return;
+    if (event.data.type === 'pick-arm') {
+      pickOn = true;
+      return;
+    }
+    if (event.data.type === 'pick-disarm') {
+      clearPick();
+      return;
+    }
     onWindowMessage(event.data);
   });
 

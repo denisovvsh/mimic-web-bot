@@ -127,6 +127,16 @@ input, textarea {
   margin: 8px 0;
 }
 
+.hint {
+  margin: 0 0 8px;
+  color: #9a3412;
+  font-size: 12px;
+}
+
+.hint[hidden] {
+  display: none;
+}
+
 .selector-miss {
   margin: 4px 0 0;
   color: #b42318;

@@ -11,6 +11,7 @@
     "storage",
     "scripting",
     "tabs",
+    "webNavigation",
     "sidePanel"
   ],
   "host_permissions": ["<all_urls>"],
@@ -40,12 +41,14 @@
       "matches": ["*://telemost.yandex.ru/*"],
       "js": ["src/content/telemost-hook.js"],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true
     },
     {
       "matches": ["*://telemost.yandex.ru/*"],
       "js": ["src/content/telemost.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [

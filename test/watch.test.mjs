@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pathMatchesSelector } from '../src/lib/selector.js';
-import { meetingEnded, pageKey, samePage } from '../src/lib/watch.js';
+import { isTelemostUrl, meetingEnded, pageKey, samePage } from '../src/lib/watch.js';
 import { adoptRootAi, migrateRootMonitor, settingsForPage } from '../src/lib/defaults.js';
 
 test('цели мониторинга не смешиваются между страницами', () => {
@@ -96,6 +96,13 @@ test('селектор и путь от родителя совпадают хв
   const directChild = 'div:nth-of-type(1) > section > div:nth-of-type(3)';
   assert.equal(pathMatchesSelector('div:nth-of-type(3)', directChild), true);
   assert.equal(pathMatchesSelector('div:nth-of-type(9)', directChild), false);
+});
+
+test('телемост определяется по домену адреса', () => {
+  assert.equal(isTelemostUrl('https://telemost.yandex.ru/j/1'), true);
+  assert.equal(isTelemostUrl('https://telemost.yandex.ru.evil.com/j/1'), false);
+  assert.equal(isTelemostUrl('https://example.com/?u=telemost.yandex.ru'), false);
+  assert.equal(isTelemostUrl(''), false);
 });
 
 test('служебный адрес не забирает селекторы и промпт', () => {

@@ -107,12 +107,13 @@
 
   <div id="pane-telemost" hidden>
   <section>
-    <h2>Телемост</h2>
+    <h2>Яндекс Телемост</h2>
+    <p id="telemost-gate" class="hint">Откройте вкладку с адресом telemost.yandex.ru</p>
     <div class="field">
       <label for="gridSelector">Сетка участников</label>
       <div class="line">
         <input id="gridSelector" spellcheck="false">
-        <button type="button" data-pick="gridSelector">Прицел</button>
+        <button type="button" data-pick="gridSelector" disabled>Прицел</button>
       </div>
       <p class="selector-miss" data-miss="gridSelector" hidden></p>
     </div>
@@ -120,7 +121,7 @@
       <label for="tileSelector">Плитка</label>
       <div class="line">
         <input id="tileSelector" spellcheck="false">
-        <button type="button" data-pick="tileSelector">Прицел</button>
+        <button type="button" data-pick="tileSelector" disabled>Прицел</button>
       </div>
       <p class="selector-miss" data-miss="tileSelector" hidden></p>
     </div>
@@ -128,7 +129,7 @@
       <label for="speakingSelector">Признак речи</label>
       <div class="line">
         <input id="speakingSelector" spellcheck="false">
-        <button type="button" data-pick="speakingSelector">Прицел</button>
+        <button type="button" data-pick="speakingSelector" disabled>Прицел</button>
       </div>
       <p class="selector-miss" data-miss="speakingSelector" hidden></p>
     </div>
@@ -136,7 +137,7 @@
       <label for="nameSelector">Имя</label>
       <div class="line">
         <input id="nameSelector" spellcheck="false">
-        <button type="button" data-pick="nameSelector">Прицел</button>
+        <button type="button" data-pick="nameSelector" disabled>Прицел</button>
       </div>
       <p class="selector-miss" data-miss="nameSelector" hidden></p>
     </div>
@@ -144,8 +145,8 @@
       <input id="localMarkers" spellcheck="false">
     </label>
     <div class="buttons">
-      <button type="button" id="rec-start">Писать созвон</button>
-      <button type="button" id="rec-stop">Остановить</button>
+      <button type="button" id="rec-start" disabled>Писать созвон</button>
+      <button type="button" id="rec-stop" disabled>Остановить</button>
     </div>
   </section>
   </div>

@@ -10,6 +10,14 @@ export function pageKey(url) {
   }
 }
 
+export function isTelemostUrl(url) {
+  try {
+    return new URL(url).hostname === 'telemost.yandex.ru';
+  } catch {
+    return false;
+  }
+}
+
 export function samePage(left, right) {
   const a = pageKey(left);
   const b = pageKey(right);

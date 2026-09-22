@@ -1,5 +1,5 @@
 import { mergeSettings, MONITOR_FIELDS, migrateRootMonitor, adoptRootAi, settingsForPage, DEFAULT_SETTINGS } from '../lib/defaults.js';
-import { pageKey, samePage } from '../lib/watch.js';
+import { isTelemostUrl, pageKey, samePage } from '../lib/watch.js';
 
 const TEXT_FIELDS = [
   'telegramToken',
@@ -41,7 +41,11 @@ document.querySelector('#macro-clear').addEventListener('click', async () => {
   setStatus('Макрос очищен');
 });
 document.querySelector('#rec-start').addEventListener('click', startRecording);
-document.querySelector('#rec-stop').addEventListener('click', () => send({ type: 'recording-stop' }));
+document.querySelector('#rec-stop').addEventListener('click', () => {
+  if (!recordingOn) return;
+  if (!window.confirm('Остановить запись созвона?')) return;
+  send({ type: 'recording-stop' });
+});
 
 document.body.addEventListener('click', (event) => {
   const pick = event.target.closest('[data-pick]');
@@ -264,9 +268,15 @@ function showActiveTab() {
 
 async function refreshActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
+  if (!tab?.id) {
+    syncTelemostControls('');
+    return;
+  }
   const key = pageKey(tab.url || '');
-  if (tab.id === boundTabId && key === boundPageKey) return;
+  if (tab.id === boundTabId && key === boundPageKey) {
+    syncTelemostControls();
+    return;
+  }
   if (boundPageKey) await persist();
   boundTabId = tab.id;
   boundUrl = tab.url || '';
@@ -278,7 +288,19 @@ async function refreshActiveTab() {
     settings = migrated;
   }
   fillMonitor(settingsForPage(settings, boundUrl));
+  syncTelemostControls();
   paintIndicators();
+}
+
+function syncTelemostControls(url = boundUrl) {
+  const allowed = isTelemostUrl(url);
+  for (const button of document.querySelectorAll('#pane-telemost [data-pick]')) button.disabled = !allowed;
+  const start = document.getElementById('rec-start');
+  if (start) start.disabled = !allowed;
+  const stop = document.getElementById('rec-stop');
+  if (stop) stop.disabled = !recordingOn;
+  const hint = document.getElementById('telemost-gate');
+  if (hint) hint.hidden = allowed;
 }
 
 function addFeature(key, selector) {
@@ -332,9 +354,10 @@ async function applyPicked(message) {
 }
 
 async function pickSelector(field, featureIndex) {
-  await save();
   const tab = await activeTab();
   if (!tab?.id) return;
+  if (TELEMOST_FIELDS.includes(field) && !isTelemostUrl(tab.url)) return;
+  await save();
   const response = await send({ type: 'pick-start', tabId: tab.id, field, featureIndex });
   if (response?.ok === false) setStatus(response.error || 'Прицел не запустился');
 }
@@ -350,10 +373,7 @@ async function withTab(type) {
 async function startRecording() {
   await save();
   const tab = await activeTab();
-  if (!tab?.id || !/telemost\.yandex\.ru/.test(tab.url || '')) {
-    setStatus('Откройте вкладку Яндекс.Телемоста');
-    return;
-  }
+  if (!tab?.id || !isTelemostUrl(tab.url)) return;
   let streamId = '';
   try {
     streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
@@ -386,8 +406,10 @@ function paintIndicators() {
   paintIndicator(document.querySelector('#monitor-indicator'), monitorIndicator(currentWatch));
   paintIndicator(
     document.querySelector('#rec-indicator'),
-    recordingOn && recordingTabId === boundTabId ? 'on' : 'off',
+    recordingOn ? 'on' : 'off',
   );
+  const stop = document.getElementById('rec-stop');
+  if (stop) stop.disabled = !recordingOn;
   checkLiveSelectors().catch(() => {});
 }
 
@@ -415,9 +437,10 @@ function clearListedMisses(ids) {
 async function probeSelectors(target, selectors, fields) {
   if (!boundTabId) return null;
   try {
-    return await chrome.tabs.sendMessage(boundTabId, {
-      target,
-      type: 'selectors-check',
+    return await send({
+      type: 'selectors-probe',
+      tabId: boundTabId,
+      frameTarget: target,
       selectors,
       ...fields,
     });

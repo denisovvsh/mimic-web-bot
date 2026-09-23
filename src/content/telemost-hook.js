@@ -438,6 +438,7 @@
         startedAt: session.startedAt,
         endedAt: action.at,
         trackId: action.trackId,
+        local: info ? Boolean(info.local) : true,
         sessionId,
       }, '*');
     }

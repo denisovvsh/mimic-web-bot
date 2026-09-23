@@ -164,6 +164,7 @@
         startedAt: event.data.startedAt,
         endedAt: event.data.endedAt,
         trackId: event.data.trackId,
+        local: event.data.local,
         sessionId: event.data.sessionId,
       });
     }
@@ -294,6 +295,7 @@
     notify({
       type: 'fallback-mixed',
       speakers: [...namesSeen],
+      remoteAudio,
     }).then((response) => {
       if (response?.ok) fallbackSent = true;
     });

@@ -6,6 +6,7 @@ import {
   recordingButtons,
   sessionPathsText,
   shouldPublishPaths,
+  shouldReleaseTab,
   toBytes,
 } from '../src/lib/audio-chunk.js';
 
@@ -33,6 +34,22 @@ test('после записи видны каталог аудио и файл �
     'Транскрипт: /home/vadim/Downloads/telemost/session-1_transcript.txt',
     'Telegram не настроен — фрагмент не отправлен',
   ].join('\n'));
+});
+
+test('свой микрофон не останавливает запись вкладки', () => {
+  const current = { sessionId: 20, recordingSessionId: 20, tracksPreferred: false };
+  assert.equal(shouldReleaseTab({ ...current, trackId: 'mic', local: true }), false);
+  assert.equal(shouldReleaseTab({ ...current, trackId: 'remote', local: false }), true);
+  assert.equal(shouldReleaseTab({ ...current, trackId: 'mixed', local: false }), false);
+  assert.equal(shouldReleaseTab({ ...current, trackId: 'remote', local: false, tracksPreferred: true }), false);
+  assert.equal(shouldReleaseTab({ ...current, trackId: 'remote', local: false, keepTab: true }), false);
+  assert.equal(shouldReleaseTab({
+    trackId: 'remote',
+    local: false,
+    tracksPreferred: false,
+    sessionId: 10,
+    recordingSessionId: 20,
+  }), false);
 });
 
 test('поздний путь старой сессии не затирает новую', () => {

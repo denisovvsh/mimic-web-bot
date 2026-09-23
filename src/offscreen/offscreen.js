@@ -6,6 +6,7 @@ const SPEECH_RMS = 0.02;
 let held = null;
 let ctl = null;
 let mode = 'idle';
+let heardEnergy = false;
 let sessionId = 0;
 let activeNames = [];
 let accumulated = new Set();
@@ -24,6 +25,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function handle(message) {
   if (message.type === 'hold') return hold(message.streamId, message.sessionId);
   if (message.type === 'record-mixed') return recordMixed(message.sessionId, message.speakers);
+  if (message.type === 'release-tab') return releaseTab();
   if (message.type === 'speakers') {
     activeNames = namesOf(message.speakers);
     return { ok: true };
@@ -63,18 +65,41 @@ async function hold(streamId, nextSessionId) {
   }
   sessionId = nextSessionId || Date.now();
   mode = 'hold';
+  await recordMixed(sessionId, []);
   return { ok: true };
 }
 
 async function recordMixed(nextSessionId, speakers) {
   if (!held) throw new Error('Поток вкладки не захвачен');
+  if (mode === 'mixed') {
+    activeNames = namesOf(speakers);
+    return { ok: true };
+  }
   sessionId = nextSessionId || sessionId;
   activeNames = namesOf(speakers);
   accumulated = new Set(activeNames);
+  heardEnergy = false;
   ctl = createUtteranceController();
   mode = 'mixed';
+  ctl.noteSpeech(MIXED_ID, Date.now(), 'созвон');
+  drain();
   if (timer) clearInterval(timer);
   timer = setInterval(tickMixed, 50);
+  return { ok: true };
+}
+
+async function releaseTab() {
+  if (mode !== 'mixed') return { ok: true };
+  if (timer) clearInterval(timer);
+  timer = 0;
+  if (ctl) {
+    ctl.flush(Date.now());
+    drain();
+  }
+  mode = 'hold';
+  await chain;
+  ctl = null;
+  heardEnergy = false;
   return { ok: true };
 }
 
@@ -83,9 +108,11 @@ function tickMixed() {
   const now = Date.now();
   const level = rms(held.analyser, held.bucket);
   for (const name of activeNames) accumulated.add(name);
-  const speaker = joinSpeakerNames([...accumulated, ...activeNames]);
+  const named = joinSpeakerNames([...accumulated, ...activeNames]);
+  const speaker = named === 'unknown' ? 'созвон' : named;
   ctl.setSpeaker(MIXED_ID, speaker);
-  if (level >= SPEECH_RMS) ctl.noteSpeech(MIXED_ID, now, speaker);
+  if (level >= SPEECH_RMS) heardEnergy = true;
+  if (!heardEnergy || level >= SPEECH_RMS) ctl.noteSpeech(MIXED_ID, now, speaker);
   else ctl.noteSilence(MIXED_ID, now);
   ctl.tick(now);
   drain();

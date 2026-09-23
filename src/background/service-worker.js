@@ -1,5 +1,5 @@
 import { mergeSettings, migrateRootMonitor, settingsForPage } from '../lib/defaults.js';
-import { acceptAudioSession, parentDirectory, sessionPathsText, shouldPublishPaths, toBytes } from '../lib/audio-chunk.js';
+import { acceptAudioSession, parentDirectory, sessionPathsText, shouldPublishPaths, shouldReleaseTab, toBytes } from '../lib/audio-chunk.js';
 import { audioFilename } from '../lib/utterance.js';
 import {
   formatClock,
@@ -24,6 +24,8 @@ let stopQueue = Promise.resolve();
 const savedFiles = new Map();
 let pathChain = Promise.resolve();
 let pathsSession = 0;
+let tracksPreferred = false;
+let keepTab = false;
 let mixed = false;
 let warnedNoKey = false;
 let monitorWatch = null;
@@ -136,9 +138,9 @@ async function handleMessage(message, sender) {
       await saveAudioChunk(message, sender);
       return { ok: true };
     case 'fallback-mixed':
-      return enableMixed(message.speakers || []);
+      return enableMixed(message.speakers || [], message.remoteAudio);
     case 'speakers':
-      if (mixed && recording) {
+      if (recording) {
         await chrome.runtime.sendMessage({
           target: 'offscreen',
           type: 'speakers',
@@ -344,6 +346,8 @@ async function startRecording({ tabId, streamId }) {
   const sessionId = Date.now();
   recording = { sessionId, tabId, navigating: false };
   claimPaths(sessionId);
+  tracksPreferred = false;
+  keepTab = false;
   mixed = false;
   warnedNoKey = false;
   await persistSession();
@@ -442,7 +446,7 @@ async function performStop() {
   await chrome.action.setBadgeText({ text: '' });
   if (current) {
     const shown = await publishFiles(current.sessionId);
-    if (!shown) await status('Запись остановлена');
+    if (!shown) await status('Запись остановлена, фрагментов нет: звук созвона не попал в файл');
   } else {
     await status('Запись остановлена');
   }
@@ -505,10 +509,11 @@ async function rememberDownload(sessionId, id, kind, fallback) {
   await publishFiles(sessionId);
 }
 
-async function enableMixed(speakers) {
+async function enableMixed(speakers, remoteAudio) {
   await ensureSession();
   if (!recording) return { ok: false, error: 'Запись не запущена' };
-  if (mixed) return { ok: true };
+  if (mixed || tracksPreferred || !Number(remoteAudio)) return { ok: true };
+  keepTab = true;
   try {
     await sendOffscreen({
       type: 'record-mixed',
@@ -516,6 +521,7 @@ async function enableMixed(speakers) {
       speakers,
     });
   } catch (error) {
+    keepTab = false;
     await status(`Смешанный захват не запустился: ${error.message}`);
     return { ok: false, error: error.message };
   }
@@ -562,6 +568,17 @@ async function saveAudioChunk(message, sender) {
   if (bytes.byteLength < 64) return;
   const sessionId = message.sessionId || session.sessionId;
   const speaker = message.speaker || 'unknown';
+  if (shouldReleaseTab({
+    trackId: message.trackId,
+    local: message.local,
+    tracksPreferred,
+    keepTab,
+    sessionId,
+    recordingSessionId: recording?.sessionId,
+  })) {
+    tracksPreferred = true;
+    chrome.runtime.sendMessage({ target: 'offscreen', type: 'release-tab' }).catch(() => {});
+  }
   const filename = audioFilename({
     startedAt: message.startedAt,
     speaker,

@@ -12,6 +12,20 @@ export function parentDirectory(filename) {
   return value.slice(0, index);
 }
 
+export function shouldReleaseTab({
+  trackId,
+  local,
+  tracksPreferred,
+  keepTab,
+  sessionId,
+  recordingSessionId,
+}) {
+  if (keepTab || tracksPreferred) return false;
+  if (!trackId || trackId === 'mixed') return false;
+  if (local !== false) return false;
+  return Boolean(recordingSessionId) && sessionId === recordingSessionId;
+}
+
 export function shouldPublishPaths({ sessionId, pathsSession, recordingSessionId }) {
   if (!sessionId) return false;
   if (recordingSessionId && recordingSessionId === sessionId) return false;

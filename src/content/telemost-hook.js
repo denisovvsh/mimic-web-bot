@@ -465,11 +465,21 @@
     }
 
     function collectElementTracks() {
-      for (const node of document.querySelectorAll('audio, video')) {
-        if (node.dataset.mimicSink) continue;
-        const stream = node.srcObject;
-        if (!stream || typeof stream.getAudioTracks !== 'function') continue;
-        for (const track of stream.getAudioTracks()) watchTrack(track, elementTrackLocal(track));
+      const seen = new Set();
+      const roots = [document];
+      for (let index = 0; index < roots.length; index += 1) {
+        const root = roots[index];
+        if (!root?.querySelectorAll || seen.has(root)) continue;
+        seen.add(root);
+        for (const node of root.querySelectorAll('*')) {
+          if (node.shadowRoot) roots.push(node.shadowRoot);
+        }
+        for (const node of root.querySelectorAll('audio, video')) {
+          if (node.dataset?.mimicSink) continue;
+          const stream = node.srcObject;
+          if (!stream || typeof stream.getAudioTracks !== 'function') continue;
+          for (const track of stream.getAudioTracks()) watchTrack(track, elementTrackLocal(track));
+        }
       }
     }
 

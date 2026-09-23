@@ -1,5 +1,6 @@
 import { recordingButtons } from '../lib/audio-chunk.js';
 import { mergeSettings, MONITOR_FIELDS, migrateRootMonitor, adoptRootAi, settingsForPage, DEFAULT_SETTINGS } from '../lib/defaults.js';
+import { createUtteranceController, joinSpeakerNames } from '../lib/utterance.js';
 import { isTelemostUrl, pageKey, samePage } from '../lib/watch.js';
 
 const TEXT_FIELDS = [
@@ -21,12 +22,15 @@ const TELEMOST_FIELDS = ['gridSelector', 'tileSelector', 'nameSelector'];
 const featuresNode = document.querySelector('#features');
 const macroNode = document.querySelector('#macro-steps');
 let boundTabId = null;
+let boundTab = null;
 let boundUrl = '';
 let boundPageKey = '';
 let currentWatch = null;
 let recordingOn = false;
 let recordingTabId = null;
 let telemostAllowed = false;
+let shareOnNextClick = false;
+let starting = false;
 
 document.querySelector('#add-feature').addEventListener('click', () => {
   addFeature('', '');
@@ -43,19 +47,44 @@ document.querySelector('#macro-clear').addEventListener('click', async () => {
   setStatus('Макрос очищен');
 });
 document.querySelector('#rec-start').addEventListener('click', () => {
-  if (recordingOn) return;
-  let capture = Promise.resolve('');
-  try {
-    capture = captureTabStream(boundTabId, boundUrl);
-  } catch (error) {
-    setStatus(`Захват вкладки: ${error.message}. Дорожки WebRTC всё равно пишутся.`);
+  if (recordingOn || starting) return;
+  const tabId = boundTabId;
+  const tab = boundTab;
+  if (!tabId || !isTelemostUrl(boundUrl)) return;
+  save().catch(() => {});
+  if (shareOnNextClick) {
+    shareOnNextClick = false;
+    starting = true;
+    shareAndStart(tabId, tab).finally(() => {
+      starting = false;
+    });
+    return;
   }
-  startRecording(boundTabId, capture);
+  starting = true;
+  send({ type: 'recording-start', tabId }).then(async (response) => {
+    if (response?.ok) return;
+    if (!response?.needShare) {
+      setStatus(response?.error || 'Запись не запустилась');
+      return;
+    }
+    if (navigator.userActivation?.isActive === false) {
+      shareOnNextClick = true;
+      setStatus('Нажмите «Писать созвон» ещё раз и выберите вкладку Телемоста со звуком.');
+      return;
+    }
+    await shareAndStart(tabId, tab);
+  }).catch((error) => setStatus(error.message)).finally(() => {
+    starting = false;
+  });
 });
 document.querySelector('#rec-stop').addEventListener('click', () => {
   if (!recordingOn) return;
   if (!window.confirm('Остановить запись созвона?')) return;
-  send({ type: 'recording-stop' });
+  stopPanelCapture().finally(() => send({ type: 'recording-stop' }));
+});
+window.addEventListener('pagehide', () => {
+  if (!panelRec) return;
+  stopPanelCapture().finally(() => send({ type: 'recording-stop' }));
 });
 
 document.body.addEventListener('click', (event) => {
@@ -87,11 +116,15 @@ featuresNode.addEventListener('click', (event) => {
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'status') setStatus(message.text || '');
   if (message?.type === 'indicators') {
+    const wasRecording = recordingOn;
     currentWatch = message.monitorWatch || null;
     recordingOn = Boolean(message.recordingOn);
     recordingTabId = message.recordingTabId ?? null;
+    if (wasRecording && !recordingOn) stopPanelCapture();
     paintIndicators();
   }
+  if (message?.target === 'panel' && message.type === 'speakers') setPanelSpeakers(message.speakers);
+  if (message?.target === 'panel' && message.type === 'release-capture') releasePanelCapture();
   if (message?.type === 'picked') applyPicked(message);
   if (message?.type === 'macro-updated') renderMacro(message.steps || []);
 });
@@ -291,6 +324,7 @@ async function refreshActiveTab() {
   }
   if (boundPageKey) await persist();
   boundTabId = tab.id;
+  boundTab = tab;
   boundUrl = tab.url || '';
   boundPageKey = key;
   let settings = mergeSettings((await chrome.storage.local.get('settings')).settings);
@@ -388,22 +422,247 @@ async function withTab(type) {
   if (response?.ok === false) setStatus(response.error || 'Команда не выполнена');
 }
 
-function captureTabStream(tabId, url) {
-  if (!tabId || !isTelemostUrl(url)) return Promise.resolve('');
-  return chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }).catch((error) => {
-    setStatus(`Захват вкладки: ${error.message}. Дорожки WebRTC всё равно пишутся.`);
-    return '';
+function shareTab(tab) {
+  const choose = chrome.desktopCapture?.chooseDesktopMedia;
+  if (typeof choose !== 'function') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      choose.call(chrome.desktopCapture, ['tab', 'audio'], tab, (streamId) => {
+        if (chrome.runtime.lastError || !streamId) {
+          resolve(null);
+          return;
+        }
+        const ctx = new AudioContext();
+        const ready = ctx.resume().catch(() => {});
+        resolve({ streamId, ctx, ready });
+      });
+    } catch {
+      resolve(null);
+    }
   });
 }
 
-async function startRecording(tabId, capture) {
-  await save();
-  if (!tabId) return;
-  const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (!tab?.id || !isTelemostUrl(tab.url)) return;
-  const streamId = await capture;
-  const response = await send({ type: 'recording-start', tabId: tab.id, streamId: streamId || '' });
-  if (response?.ok === false) setStatus(response.error || 'Запись не запустилась');
+const PANEL_TRACK = 'mixed';
+const PANEL_RMS = 0.02;
+let panelRec = null;
+let panelStop = Promise.resolve();
+
+async function shareAndStart(tabId, tab) {
+  const shared = await shareTab(tab?.id === tabId ? tab : { id: tabId });
+  if (!shared?.streamId) {
+    setStatus('Выберите вкладку Телемоста и включите звук вкладки.');
+    return;
+  }
+  let stream;
+  let graph;
+  try {
+    await shared.ready;
+    stream = await openSharedTab(shared.streamId);
+    graph = connectPanelGraph(shared.ctx, stream);
+    const started = await send({ type: 'recording-start', tabId, panelCapture: true });
+    if (!started?.ok || !started.sessionId) {
+      closeSharedTab(stream);
+      await shared.ctx.close().catch(() => {});
+      setStatus(started?.error || 'Запись не запустилась');
+      return;
+    }
+    recordSharedTab(stream, started.sessionId, graph);
+  } catch (error) {
+    if (stream) closeSharedTab(stream);
+    await shared.ctx.close().catch(() => {});
+    setStatus(`Захват вкладки: ${error.message}`);
+  }
+}
+
+function connectPanelGraph(ctx, stream) {
+  const audioOnly = new MediaStream(stream.getAudioTracks());
+  const source = ctx.createMediaStreamSource(audioOnly);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  const silent = ctx.createGain();
+  silent.gain.value = 0;
+  source.connect(analyser);
+  analyser.connect(silent);
+  silent.connect(ctx.destination);
+  return {
+    audioOnly,
+    ctx,
+    source,
+    analyser,
+    silent,
+    bucket: new Uint8Array(analyser.fftSize),
+  };
+}
+
+function openSharedTab(streamId) {
+  const mandatory = { chromeMediaSource: 'desktop', chromeMediaSourceId: streamId };
+  return navigator.mediaDevices.getUserMedia({
+    audio: { mandatory },
+    video: { mandatory },
+  }).then((stream) => {
+    if (stream.getAudioTracks().length) return stream;
+    closeSharedTab(stream);
+    throw new Error('Во вкладке нет аудио');
+  });
+}
+
+function closeSharedTab(stream) {
+  for (const track of stream?.getTracks?.() || []) track.stop();
+}
+
+function recordSharedTab(stream, sessionId, graph) {
+  stopPanelCapture();
+  const ctl = createUtteranceController();
+  const state = {
+    stream,
+    ...graph,
+    ctl,
+    sessionId,
+    heardEnergy: false,
+    released: false,
+    activeNames: [],
+    accumulated: new Set(),
+    chain: Promise.resolve(),
+    file: null,
+    timer: 0,
+  };
+  panelRec = state;
+  ctl.noteSpeech(PANEL_TRACK, Date.now(), 'созвон');
+  drainPanel(state);
+  state.timer = setInterval(() => tickPanel(state), 50);
+  for (const track of stream.getTracks()) {
+    track.addEventListener('ended', () => {
+      send({ type: 'capture-ended' }).catch(() => {});
+    }, { once: true });
+  }
+}
+
+function setPanelSpeakers(speakers) {
+  if (!panelRec || panelRec.released) return;
+  panelRec.activeNames = namesOf(speakers);
+}
+
+function namesOf(speakers) {
+  if (!Array.isArray(speakers)) return [];
+  return speakers.map((speaker) => (typeof speaker === 'string' ? speaker : speaker?.name)).filter(Boolean);
+}
+
+function tickPanel(state) {
+  if (panelRec !== state || state.released) return;
+  const now = Date.now();
+  const level = panelRms(state);
+  for (const name of state.activeNames) state.accumulated.add(name);
+  const named = joinSpeakerNames([...state.accumulated, ...state.activeNames]);
+  const speaker = named === 'unknown' ? 'созвон' : named;
+  state.ctl.setSpeaker(PANEL_TRACK, speaker);
+  if (level >= PANEL_RMS) state.heardEnergy = true;
+  if (!state.heardEnergy || level >= PANEL_RMS) state.ctl.noteSpeech(PANEL_TRACK, now, speaker);
+  else state.ctl.noteSilence(PANEL_TRACK, now);
+  state.ctl.tick(now);
+  drainPanel(state);
+}
+
+function panelRms(state) {
+  state.analyser.getByteTimeDomainData(state.bucket);
+  let sum = 0;
+  for (let i = 0; i < state.bucket.length; i += 1) {
+    const value = (state.bucket[i] - 128) / 128;
+    sum += value * value;
+  }
+  return Math.sqrt(sum / state.bucket.length);
+}
+
+function drainPanel(state) {
+  for (const action of state.ctl.drainActions()) {
+    state.chain = state.chain.then(() => applyPanel(state, action), () => applyPanel(state, action));
+  }
+}
+
+async function applyPanel(state, action) {
+  if (action.kind === 'open') {
+    state.accumulated = new Set(state.activeNames);
+    const speaker = joinSpeakerNames([...state.accumulated]);
+    state.ctl.setSpeaker(PANEL_TRACK, speaker);
+    await openPanelFile(state, action.at);
+    return;
+  }
+  if (action.kind === 'close') {
+    const speaker = state.accumulated.size
+      ? joinSpeakerNames([...state.accumulated])
+      : (action.speaker || 'unknown');
+    await closePanelFile(state, action, speaker);
+  }
+}
+
+async function openPanelFile(state, startedAt) {
+  await takePanelFile(state);
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : 'audio/webm';
+  const chunks = [];
+  const rec = new MediaRecorder(state.audioOnly, { mimeType: mime });
+  rec.addEventListener('dataavailable', (event) => {
+    if (event.data?.size) chunks.push(event.data);
+  });
+  rec.start(250);
+  state.file = { rec, chunks, startedAt };
+}
+
+async function closePanelFile(state, action, speaker) {
+  const blob = await takePanelFile(state);
+  if (!blob || blob.size < 64) return;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  await send({
+    type: 'audio-chunk',
+    buffer: bytes,
+    speaker,
+    startedAt: action.startedAt,
+    endedAt: action.at,
+    trackId: PANEL_TRACK,
+    sessionId: state.sessionId,
+  });
+}
+
+function takePanelFile(state) {
+  const current = state.file;
+  state.file = null;
+  if (!current) return Promise.resolve(null);
+  if (current.rec.state === 'inactive') {
+    return Promise.resolve(current.chunks.length ? new Blob(current.chunks, { type: 'audio/webm' }) : null);
+  }
+  return new Promise((resolve) => {
+    current.rec.addEventListener('stop', () => {
+      resolve(current.chunks.length ? new Blob(current.chunks, { type: 'audio/webm' }) : null);
+    }, { once: true });
+    current.rec.stop();
+  });
+}
+
+function releasePanelCapture() {
+  const state = panelRec;
+  if (!state || state.released) return;
+  state.released = true;
+  clearInterval(state.timer);
+  state.timer = 0;
+  state.ctl.flush(Date.now());
+  drainPanel(state);
+}
+
+function stopPanelCapture() {
+  const state = panelRec;
+  if (!state) return panelStop;
+  panelRec = null;
+  clearInterval(state.timer);
+  state.released = true;
+  state.ctl.flush(Date.now());
+  drainPanel(state);
+  panelStop = state.chain
+    .then(() => takePanelFile(state))
+    .then(() => {
+      closeSharedTab(state.stream);
+      return state.ctx.close().catch(() => {});
+    });
+  return panelStop;
 }
 
 async function activeTab() {

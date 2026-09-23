@@ -102,13 +102,38 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target && message.target !== 'worker') return;
-  handleMessage(message, sender)
+  const capture = message?.type === 'recording-start' && message.tabId && !message.streamId && !message.allowWithoutCapture && !message.panelCapture
+    ? requestTabStream(message.tabId)
+    : null;
+  handleMessage(message, sender, capture)
     .then((result) => sendResponse(result ?? { ok: true }))
     .catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;
 });
 
-async function handleMessage(message, sender) {
+function requestTabStream(tabId) {
+  const getId = chrome.tabCapture?.getMediaStreamId;
+  if (typeof getId !== 'function') {
+    return Promise.resolve({ streamId: '', error: 'В этом браузере нет захвата вкладки.' });
+  }
+  try {
+    const result = getId.call(chrome.tabCapture, { targetTabId: tabId });
+    if (!result || typeof result.then !== 'function') {
+      return Promise.resolve({ streamId: '', error: 'Браузер не выдал захват вкладки.' });
+    }
+    return result.then(
+      (streamId) => ({
+        streamId: streamId || '',
+        error: streamId ? '' : 'Браузер не выдал захват вкладки.',
+      }),
+      (error) => ({ streamId: '', error: error?.message || 'Браузер не выдал захват вкладки.' }),
+    );
+  } catch (error) {
+    return Promise.resolve({ streamId: '', error: error.message || 'Браузер не выдал захват вкладки.' });
+  }
+}
+
+async function handleMessage(message, sender, capture) {
   await ensureSession();
   switch (message?.type) {
     case 'status-get':
@@ -129,7 +154,7 @@ async function handleMessage(message, sender) {
           : null,
       };
     case 'recording-start':
-      return startRecording(message);
+      return startRecording(message, capture);
     case 'recording-stop':
       return stopRecording();
     case 'capture-ended':
@@ -142,11 +167,13 @@ async function handleMessage(message, sender) {
       return enableMixed(message.speakers || [], message.remoteAudio);
     case 'speakers':
       if (recording) {
+        const speakers = message.speakers || [];
         await chrome.runtime.sendMessage({
           target: 'offscreen',
           type: 'speakers',
-          speakers: message.speakers || [],
+          speakers,
         }).catch(() => {});
+        chrome.runtime.sendMessage({ target: 'panel', type: 'speakers', speakers }).catch(() => {});
       }
       return { ok: true };
     case 'monitor-start':
@@ -342,10 +369,20 @@ async function adoptRootMonitor(url) {
   await chrome.storage.local.set({ settings: migrated });
 }
 
-async function startRecording({ tabId, streamId }) {
+async function startRecording({ tabId, streamId, allowWithoutCapture, captureNote: note, panelCapture }, capture) {
+  let id = streamId || '';
+  if (!id && capture) {
+    const got = await capture;
+    id = got.streamId || '';
+    note = got.error || note || '';
+  }
+  streamId = id;
+  if (!streamId && !allowWithoutCapture && !panelCapture) {
+    return { ok: false, needShare: true, error: note || 'Браузер не выдал захват вкладки.' };
+  }
   if (recording?.tabId) await stopRecording();
   const sessionId = Date.now();
-  recording = { sessionId, tabId, navigating: false };
+  recording = { sessionId, tabId, navigating: false, panelCapture: Boolean(panelCapture) };
   claimPaths(sessionId);
   tracksPreferred = false;
   keepTab = false;
@@ -357,7 +394,9 @@ async function startRecording({ tabId, streamId }) {
   await chrome.action.setBadgeText({ text: 'REC' });
   let heard = false;
   try {
-    if (streamId) {
+    if (panelCapture) {
+      heard = true;
+    } else if (streamId) {
       try {
         await ensureOffscreen();
         await sendOffscreen({ type: 'hold', streamId, sessionId });
@@ -366,7 +405,7 @@ async function startRecording({ tabId, streamId }) {
         captureNote = `Захват вкладки: ${error.message}`;
       }
     } else {
-      captureNote = 'Браузер не выдал захват вкладки.';
+      captureNote = note || 'Браузер не выдал захват вкладки.';
     }
     await injectFrames(tabId, ['src/content/telemost-base.js']);
     await injectFrames(tabId, ['src/content/telemost-hook.js'], 'MAIN');
@@ -518,7 +557,7 @@ async function rememberDownload(sessionId, id, kind, fallback) {
 async function enableMixed(speakers, remoteAudio) {
   await ensureSession();
   if (!recording) return { ok: false, error: 'Запись не запущена' };
-  if (mixed || tracksPreferred || !Number(remoteAudio)) return { ok: true };
+  if (recording.panelCapture || mixed || tracksPreferred || !Number(remoteAudio)) return { ok: true };
   keepTab = true;
   try {
     await sendOffscreen({
@@ -584,6 +623,7 @@ async function saveAudioChunk(message, sender) {
   })) {
     tracksPreferred = true;
     chrome.runtime.sendMessage({ target: 'offscreen', type: 'release-tab' }).catch(() => {});
+    chrome.runtime.sendMessage({ target: 'panel', type: 'release-capture' }).catch(() => {});
   }
   const filename = audioFilename({
     startedAt: message.startedAt,

@@ -351,6 +351,7 @@ async function startRecording({ tabId, streamId }) {
   await chrome.action.setBadgeText({ text: 'REC' });
   let heard = Boolean(streamId);
   try {
+    await injectFrames(tabId, ['src/content/telemost-base.js']);
     await injectFrames(tabId, ['src/content/telemost-hook.js'], 'MAIN');
     const scriptFrames = await injectFrames(tabId, ['src/content/telemost.js']);
     if (streamId) {

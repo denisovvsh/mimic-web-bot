@@ -13,8 +13,47 @@
   let pickOn = false;
   let pickBox = null;
   let uniqueSelector = () => '';
-  const selectorReady = import(chrome.runtime.getURL('src/lib/selector.js'))
-    .then((mod) => { uniqueSelector = mod.uniqueSelector; })
+
+  function extensionBase() {
+    try {
+      const getURL = chrome?.runtime?.getURL;
+      if (typeof getURL === 'function') return getURL.call(chrome.runtime, '');
+    } catch {
+      /* в основном мире страницы этого метода нет */
+    }
+    return document.documentElement?.dataset?.mimicExt || '';
+  }
+
+  function extensionUrl(path) {
+    let base = String(extensionBase() || '').trim();
+    const file = String(path || '').replace(/^\/+/, '');
+    if (!base || !file) return '';
+    if (!base.endsWith('/')) base += '/';
+    try {
+      return new URL(file, base).href;
+    } catch {
+      return '';
+    }
+  }
+
+  function whenExtensionUrl(path) {
+    const ready = extensionUrl(path);
+    if (ready) return Promise.resolve(ready);
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        const url = extensionUrl(path);
+        if (url || Date.now() - started > 2000) {
+          clearInterval(timer);
+          resolve(url);
+        }
+      }, 20);
+    });
+  }
+
+  const selectorReady = whenExtensionUrl('src/lib/selector.js')
+    .then((url) => (url ? import(url) : null))
+    .then((mod) => { if (mod?.uniqueSelector) uniqueSelector = mod.uniqueSelector; })
     .catch(() => {});
 
   function pickTarget(event) {
@@ -163,9 +202,14 @@
   }
 
   async function boot() {
+    const [utteranceUrl, fallbackUrl] = await Promise.all([
+      whenExtensionUrl('src/lib/utterance.js'),
+      whenExtensionUrl('src/lib/fallback.js'),
+    ]);
+    if (!utteranceUrl || !fallbackUrl) return;
     const [{ createUtteranceController }, { levelsReadable }] = await Promise.all([
-      import(chrome.runtime.getURL('src/lib/utterance.js')),
-      import(chrome.runtime.getURL('src/lib/fallback.js')),
+      import(utteranceUrl),
+      import(fallbackUrl),
     ]);
     const ctl = createUtteranceController();
     const tracks = new Map();
@@ -310,8 +354,8 @@
     }
 
     let labelTracks = () => [];
-    import(chrome.runtime.getURL('src/lib/watch.js')).then((mod) => {
-      labelTracks = mod.labelTracks;
+    whenExtensionUrl('src/lib/watch.js').then((url) => (url ? import(url) : null)).then((mod) => {
+      if (mod?.labelTracks) labelTracks = mod.labelTracks;
     }).catch(() => {});
 
     function bindSpeakers() {

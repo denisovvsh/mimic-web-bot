@@ -39,6 +39,12 @@
   "content_scripts": [
     {
       "matches": ["*://telemost.yandex.ru/*"],
+      "js": ["src/content/telemost-base.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["*://telemost.yandex.ru/*"],
       "js": ["src/content/telemost-hook.js"],
       "run_at": "document_start",
       "world": "MAIN",

@@ -28,6 +28,7 @@ let tracksPreferred = false;
 let keepTab = false;
 let mixed = false;
 let warnedNoKey = false;
+let captureNote = '';
 let monitorWatch = null;
 let sessionLoaded = false;
 let loadingSession = null;
@@ -350,23 +351,26 @@ async function startRecording({ tabId, streamId }) {
   keepTab = false;
   mixed = false;
   warnedNoKey = false;
+  captureNote = '';
   await persistSession();
   await chrome.action.setBadgeBackgroundColor({ color: '#b42318' });
   await chrome.action.setBadgeText({ text: 'REC' });
-  let heard = Boolean(streamId);
+  let heard = false;
   try {
-    await injectFrames(tabId, ['src/content/telemost-base.js']);
-    await injectFrames(tabId, ['src/content/telemost-hook.js'], 'MAIN');
-    const scriptFrames = await injectFrames(tabId, ['src/content/telemost.js']);
     if (streamId) {
       try {
         await ensureOffscreen();
         await sendOffscreen({ type: 'hold', streamId, sessionId });
+        heard = true;
       } catch (error) {
-        heard = false;
-        await status(`Проброс звука: ${error.message}`);
+        captureNote = `Захват вкладки: ${error.message}`;
       }
+    } else {
+      captureNote = 'Браузер не выдал захват вкладки.';
     }
+    await injectFrames(tabId, ['src/content/telemost-base.js']);
+    await injectFrames(tabId, ['src/content/telemost-hook.js'], 'MAIN');
+    const scriptFrames = await injectFrames(tabId, ['src/content/telemost.js']);
     const settings = await getSettings();
     const armTargets = scriptFrames.length ? scriptFrames : await tabFrames(tabId);
     let pending = [...armTargets];
@@ -402,7 +406,7 @@ async function startRecording({ tabId, streamId }) {
     await chrome.action.setBadgeText({ text: '' });
     throw error;
   }
-  await status(heard ? 'Запись созвона включена' : 'Запись дорожек включена, захват вкладки недоступен');
+  await status(heard ? 'Запись созвона включена' : captureNote);
   return { ok: true, sessionId };
 }
 
@@ -446,7 +450,9 @@ async function performStop() {
   await chrome.action.setBadgeText({ text: '' });
   if (current) {
     const shown = await publishFiles(current.sessionId);
-    if (!shown) await status('Запись остановлена, фрагментов нет: звук созвона не попал в файл');
+    if (!shown) {
+      await status(`Запись остановлена, фрагментов нет: ${captureNote || 'Звук созвона не попал в файл.'}`);
+    }
   } else {
     await status('Запись остановлена');
   }

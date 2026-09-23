@@ -278,6 +278,7 @@
     // Громкость элемента ненулевая, в динамики звук не идёт: выход забран в GainNode.
     function attachSink(stream, ctx) {
       const el = document.createElement('audio');
+      el.dataset.mimicSink = '1';
       el.srcObject = stream;
       el.volume = 1;
       el.autoplay = true;
@@ -455,11 +456,29 @@
       });
     }
 
+    function elementTrackLocal(track) {
+      try {
+        return Boolean(track.getSettings?.().deviceId);
+      } catch {
+        return false;
+      }
+    }
+
+    function collectElementTracks() {
+      for (const node of document.querySelectorAll('audio, video')) {
+        if (node.dataset.mimicSink) continue;
+        const stream = node.srcObject;
+        if (!stream || typeof stream.getAudioTracks !== 'function') continue;
+        for (const track of stream.getAudioTracks()) watchTrack(track, elementTrackLocal(track));
+      }
+    }
+
     function handleMessage(data) {
       if (data.type === 'arm') {
         mode = 'tracks';
         sessionId = data.sessionId || Date.now();
         context();
+        collectElementTracks();
         publishCounts(true);
         return;
       }
@@ -479,10 +498,13 @@
     onWindowMessage = handleMessage;
     for (const message of pendingMessages.splice(0)) handleMessage(message);
 
+    let elementScan = 0;
     setInterval(() => {
       const now = Date.now();
       if (audioCtx?.state === 'suspended') audioCtx.resume().catch(() => {});
       if (mode === 'tracks') {
+        elementScan += 1;
+        if (elementScan % 20 === 1) collectElementTracks();
         for (const info of tracks.values()) {
           if (info.sink) {
             mountSink(info.sink);

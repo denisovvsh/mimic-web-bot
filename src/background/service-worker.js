@@ -1,4 +1,5 @@
 import { mergeSettings, migrateRootMonitor, settingsForPage } from '../lib/defaults.js';
+import { acceptAudioSession, parentDirectory, sessionPathsText, shouldPublishPaths, toBytes } from '../lib/audio-chunk.js';
 import { audioFilename } from '../lib/utterance.js';
 import {
   formatClock,
@@ -9,7 +10,6 @@ import {
 import { completeChat, transcribe } from '../lib/openrouter.js';
 import { samePage } from '../lib/watch.js';
 import {
-  escapeHtml,
   fitCaption,
   sendDocument,
   sendMessage,
@@ -17,7 +17,13 @@ import {
 } from '../lib/telegram.js';
 
 const STT_FAIL = '(фрагмент не расшифрован)';
+const CHUNK_DRAIN_MS = 8000;
 let recording = null;
+let lingering = [];
+let stopQueue = Promise.resolve();
+const savedFiles = new Map();
+let pathChain = Promise.resolve();
+let pathsSession = 0;
 let mixed = false;
 let warnedNoKey = false;
 let monitorWatch = null;
@@ -35,6 +41,7 @@ async function ensureSession() {
         if (saved?.recording?.tabId) {
           recording = saved.recording;
           mixed = Boolean(saved.mixed);
+          claimPaths(recording.sessionId);
         }
         monitorWatch = stored?.monitorWatch || null;
         sessionLoaded = true;
@@ -336,6 +343,7 @@ async function startRecording({ tabId, streamId }) {
   if (recording?.tabId) await stopRecording();
   const sessionId = Date.now();
   recording = { sessionId, tabId, navigating: false };
+  claimPaths(sessionId);
   mixed = false;
   warnedNoKey = false;
   await persistSession();
@@ -378,9 +386,12 @@ async function startRecording({ tabId, streamId }) {
     }
     if (pending.length === armTargets.length) throw lastError || new Error('Вкладка Телемоста не отвечает');
   } catch (error) {
+    const failed = recording;
+    if (failed) retainSession(failed);
     recording = null;
     mixed = false;
     await persistSession();
+    if (failed?.tabId) await messageFrames(failed.tabId, { target: 'telemost', type: 'disarm' });
     await sendOffscreen({ type: 'stop' }).catch(() => {});
     await chrome.offscreen.closeDocument().catch(() => {});
     await chrome.action.setBadgeText({ text: '' });
@@ -390,20 +401,107 @@ async function startRecording({ tabId, streamId }) {
   return { ok: true, sessionId };
 }
 
-async function stopRecording() {
+function stopRecording() {
+  const run = stopQueue.then(() => performStop());
+  stopQueue = run.then(() => {}, () => {});
+  return run;
+}
+
+function retainSession(session) {
+  if (!session?.sessionId) return;
+  const now = Date.now();
+  lingering = lingering.filter((item) => item.until > now && item.sessionId !== session.sessionId);
+  lingering.push({
+    sessionId: session.sessionId,
+    tabId: session.tabId,
+    until: now + CHUNK_DRAIN_MS,
+  });
+}
+
+function openSessions() {
+  const now = Date.now();
+  lingering = lingering.filter((item) => item.until > now);
+  return [recording, ...lingering].filter(Boolean);
+}
+
+async function performStop() {
   await ensureSession();
   const current = recording;
-  recording = null;
-  mixed = false;
-  await persistSession();
-  await chrome.action.setBadgeText({ text: '' });
   if (current?.tabId) {
     await messageFrames(current.tabId, { target: 'telemost', type: 'disarm' });
   }
   await sendOffscreen({ type: 'stop' }).catch(() => {});
   await chrome.offscreen.closeDocument().catch(() => {});
-  await status('Запись остановлена');
+  if (current) retainSession(current);
+  if (!current || recording?.sessionId === current.sessionId) {
+    recording = null;
+    mixed = false;
+    await persistSession();
+  }
+  await chrome.action.setBadgeText({ text: '' });
+  if (current) {
+    const shown = await publishFiles(current.sessionId);
+    if (!shown) await status('Запись остановлена');
+  } else {
+    await status('Запись остановлена');
+  }
   return { ok: true };
+}
+
+function filesOf(sessionId) {
+  let info = savedFiles.get(sessionId);
+  if (!info) {
+    info = { directory: '', transcript: '', notes: [] };
+    savedFiles.set(sessionId, info);
+  }
+  return info;
+}
+
+async function noteSession(sessionId, text) {
+  const info = filesOf(sessionId);
+  const added = Boolean(text) && !info.notes.includes(text);
+  if (added) info.notes.push(text);
+  if (recording?.sessionId === sessionId) {
+    if (added) await status(text);
+    return;
+  }
+  await publishFiles(sessionId);
+}
+
+function publishFiles(sessionId) {
+  const run = pathChain.then(() => sendPaths(sessionId), () => sendPaths(sessionId));
+  pathChain = run.then(() => {}, () => {});
+  return run;
+}
+
+function claimPaths(sessionId) {
+  if (sessionId > pathsSession) pathsSession = sessionId;
+}
+
+async function sendPaths(sessionId) {
+  const visible = () => shouldPublishPaths({
+    sessionId,
+    pathsSession,
+    recordingSessionId: recording?.sessionId,
+  });
+  if (!visible()) return '';
+  const text = sessionPathsText(filesOf(sessionId));
+  if (!text || !visible()) return '';
+  claimPaths(sessionId);
+  await status(text);
+  return text;
+}
+
+async function rememberDownload(sessionId, id, kind, fallback) {
+  const filename = (await downloadFilename(id)) || fallback || '';
+  if (!filename) return;
+  const info = filesOf(sessionId);
+  if (kind === 'transcript') info.transcript = filename;
+  else {
+    const directory = parentDirectory(filename);
+    if (directory) info.directory = directory;
+  }
+  await publishFiles(sessionId);
 }
 
 async function enableMixed(speakers) {
@@ -457,34 +555,39 @@ async function sendOffscreen(message) {
 
 async function saveAudioChunk(message, sender) {
   if (!message?.buffer) return;
-  if (!recording) return;
-  if (message.sessionId && message.sessionId !== recording.sessionId) return;
-  if (sender?.tab?.id && sender.tab.id !== recording.tabId) return;
+  const session = acceptAudioSession(message, sender, openSessions());
+  if (!session) return;
   const bytes = toBytes(message.buffer);
   if (bytes.byteLength < 64) return;
-  const sessionId = message.sessionId || recording?.sessionId || Date.now();
+  const sessionId = message.sessionId || session.sessionId;
   const speaker = message.speaker || 'unknown';
   const filename = audioFilename({
     startedAt: message.startedAt,
     speaker,
     trackId: message.trackId || 'track',
   });
+  let audioId = 0;
   try {
-    await downloadBytes(filename, bytes, 'audio/webm', 'uniquify');
+    audioId = await downloadBytes(filename, bytes, 'audio/webm', 'uniquify');
   } catch (error) {
-    await status(`Скачивание: ${error.message}`);
+    await noteSession(sessionId, `Скачивание: ${error.message}`);
   }
   const settings = await getSettings();
-  const caption = `${escapeHtml(speaker)} ${formatClock(message.startedAt)}–${formatClock(message.endedAt)}`;
+  const caption = `${speaker} ${formatClock(message.startedAt)}–${formatClock(message.endedAt)}`;
+  const token = String(settings.telegramToken || '').trim();
+  const chatId = String(settings.telegramChatId || '').trim();
   const telegramTask = (async () => {
-    if (!settings.telegramToken || !settings.telegramChatId) return;
-    await sendDocument(settings.telegramToken, settings.telegramChatId, {
+    if (!token || !chatId) {
+      await noteSession(sessionId, 'Telegram не настроен — фрагмент не отправлен');
+      return;
+    }
+    await sendDocument(token, chatId, {
       filename: filename.split('/').pop(),
       bytes,
       mime: 'audio/webm',
       caption,
     });
-  })().catch((error) => status(`Telegram: ${error.message}`));
+  })().catch((error) => noteSession(sessionId, `Telegram: ${error.message}`));
   const textTask = (async () => {
     if (!settings.openrouterKey) return '';
     return transcribe({
@@ -493,15 +596,16 @@ async function saveAudioChunk(message, sender) {
       bytes,
       language: settings.sttLanguage,
     });
-  })().catch((error) => {
-    status(`Расшифровка: ${error.message}`);
+  })().catch(async (error) => {
+    await noteSession(sessionId, `Расшифровка: ${error.message}`);
     return STT_FAIL;
   });
-  const [, text] = await Promise.all([telegramTask, textTask]);
+  const pathTask = audioId ? rememberDownload(sessionId, audioId, 'audio', filename) : Promise.resolve();
+  const [, text] = await Promise.all([telegramTask, textTask, pathTask]);
   if (!settings.openrouterKey) {
     if (!warnedNoKey) {
       warnedNoKey = true;
-      await status('Нет ключа OpenRouter — текст созвона не пишется');
+      await noteSession(sessionId, 'Нет ключа OpenRouter — файл транскрипта не пишется');
     }
     return;
   }
@@ -517,7 +621,7 @@ async function saveAudioChunk(message, sender) {
 function enqueueTranscript(sessionId, line) {
   transcriptQueue = transcriptQueue
     .then(() => appendTranscript(sessionId, line))
-    .catch((error) => status(`Транскрипт: ${error.message}`));
+    .catch((error) => noteSession(sessionId, `Транскрипт: ${error.message}`));
   return transcriptQueue;
 }
 
@@ -528,7 +632,9 @@ async function appendTranscript(sessionId, line) {
   lines.push(line);
   await chrome.storage.local.set({ [key]: lines });
   const text = renderTranscript(lines);
-  await downloadBytes(transcriptFilename(sessionId), new TextEncoder().encode(text), 'text/plain', 'overwrite');
+  const relative = transcriptFilename(sessionId);
+  const id = await downloadBytes(relative, new TextEncoder().encode(text), 'text/plain', 'overwrite');
+  await rememberDownload(sessionId, id, 'transcript', relative);
 }
 
 async function onItemFound(message, sender) {
@@ -715,23 +821,69 @@ async function sendPage(tabId, frameId, message) {
 }
 
 function downloadBytes(filename, bytes, mime, conflictAction) {
-  const blob = new Blob([bytes], { type: mime });
-  const url = URL.createObjectURL(blob);
+  let url = '';
+  try {
+    url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  } catch {
+    url = '';
+  }
+  const saved = url
+    ? downloadUrl(url, filename, conflictAction).finally(() => {
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    })
+    : Promise.reject(new Error('blob'));
+  return saved.catch(() => downloadUrl(dataUrl(bytes, mime), filename, conflictAction));
+}
+
+function downloadFilename(id) {
+  if (!id) return Promise.resolve('');
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (filename) => {
+      if (settled) return;
+      settled = true;
+      try { chrome.downloads.onChanged.removeListener(onChanged); } catch { /* слушатель уже снят */ }
+      resolve(filename || '');
+    };
+    const onChanged = (delta) => {
+      if (delta.id !== id) return;
+      if (delta.filename?.current) {
+        finish(delta.filename.current);
+        return;
+      }
+      if (delta.state?.current !== 'complete' && delta.state?.current !== 'interrupted') return;
+      chrome.downloads.search({ id }, (items) => finish(items?.[0]?.filename || ''));
+    };
+    try {
+      chrome.downloads.onChanged.addListener(onChanged);
+    } catch {
+      finish('');
+      return;
+    }
+    chrome.downloads.search({ id }, (items) => {
+      const name = items?.[0]?.filename || '';
+      if (name) finish(name);
+    });
+    setTimeout(() => {
+      chrome.downloads.search({ id }, (items) => finish(items?.[0]?.filename || ''));
+    }, 4000);
+  });
+}
+
+function downloadUrl(url, filename, conflictAction) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download({ url, filename, conflictAction, saveAs: false }, (id) => {
       const error = chrome.runtime.lastError;
-      setTimeout(() => URL.revokeObjectURL(url), 20_000);
-      if (error) reject(new Error(error.message));
+      if (error || !id) reject(new Error(error?.message || 'Скачивание не началось'));
       else resolve(id);
     });
   });
 }
 
-function toBytes(buffer) {
-  if (buffer instanceof ArrayBuffer) return new Uint8Array(buffer);
-  if (ArrayBuffer.isView(buffer)) return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  if (buffer?.type === 'Buffer' && Array.isArray(buffer.data)) return new Uint8Array(buffer.data);
-  return new Uint8Array(buffer);
+function dataUrl(bytes, mime) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  return `data:${mime};base64,${btoa(binary)}`;
 }
 
 function dataUrlToBytes(dataUrl) {

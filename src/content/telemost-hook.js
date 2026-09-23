@@ -163,7 +163,10 @@
   }
 
   async function boot() {
-    const { createUtteranceController } = await import(chrome.runtime.getURL('src/lib/utterance.js'));
+    const [{ createUtteranceController }, { levelsReadable }] = await Promise.all([
+      import(chrome.runtime.getURL('src/lib/utterance.js')),
+      import(chrome.runtime.getURL('src/lib/fallback.js')),
+    ]);
     const ctl = createUtteranceController();
     const tracks = new Map();
     let audioCtx = null;
@@ -193,27 +196,87 @@
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
+      const silent = ctx.createGain();
+      silent.gain.value = 0;
       source.connect(analyser);
+      source.connect(silent);
+      silent.connect(ctx.destination);
+      const sink = attachSink(stream, ctx);
       const info = {
         id: trackId,
         track,
         stream,
+        source,
+        silent,
         analyser,
         bucket: new Uint8Array(analyser.fftSize),
         local: Boolean(local),
         speaker: '',
         unknownLabel: '',
         hot: false,
+        sink: sink.element,
+        elementSource: sink.elementSource,
+        elementMute: sink.elementMute,
       };
       tracks.set(trackId, info);
       track.addEventListener('ended', () => {
         ctl.endTrack(trackId, Date.now());
         drain();
         chain = chain.then(() => {
+          releaseTrack(info);
           tracks.delete(trackId);
           publishCounts(true);
         });
       });
+    }
+
+    // Chrome не декодирует чужой WebRTC-трек в Analyser, пока его не играет audio-элемент.
+    // Громкость элемента ненулевая, в динамики звук не идёт: выход забран в GainNode.
+    function attachSink(stream, ctx) {
+      const el = document.createElement('audio');
+      el.srcObject = stream;
+      el.volume = 1;
+      el.autoplay = true;
+      el.playsInline = true;
+      el.setAttribute('aria-hidden', 'true');
+      el.style.cssText = 'position:fixed;width:0;height:0;opacity:0;pointer-events:none';
+      let elementSource = null;
+      let elementMute = null;
+      try {
+        elementSource = ctx.createMediaElementSource(el);
+        elementMute = ctx.createGain();
+        elementMute.gain.value = 0;
+        elementSource.connect(elementMute);
+        elementMute.connect(ctx.destination);
+      } catch {
+        el.volume = 0.001;
+      }
+      mountSink(el);
+      el.play().catch(() => {});
+      return { element: el, elementSource, elementMute };
+    }
+
+    function mountSink(el) {
+      if (!el || el.isConnected) return;
+      const parent = document.documentElement || document.body;
+      if (parent) parent.append(el);
+    }
+
+    function detachSink(info) {
+      const el = info?.sink;
+      if (!el) return;
+      try { el.pause(); } catch { /* уже остановлен */ }
+      try { el.srcObject = null; } catch { /* поток уже снят */ }
+      try { el.remove(); } catch { /* узел уже снят */ }
+      info.sink = null;
+    }
+
+    function releaseTrack(info) {
+      detachSink(info);
+      try { info.elementSource?.disconnect(); } catch { /* уже отключён */ }
+      try { info.elementMute?.disconnect(); } catch { /* уже отключён */ }
+      try { info.silent?.disconnect(); } catch { /* уже отключён */ }
+      try { info.source?.disconnect(); } catch { /* уже отключён */ }
     }
 
     onTrack = watchTrack;
@@ -226,9 +289,9 @@
         if (info.local) local += 1;
         else remote += 1;
       }
-      const hearing = audioCtx?.state === 'running';
-      const key = `${remote}:${local}:${hearing ? 1 : 0}`;
+      const hearing = levelsReadable({ contextRunning: audioCtx?.state === 'running' });
       const now = Date.now();
+      const key = `${remote}:${local}:${hearing ? 1 : 0}`;
       if (!force && key === publishedKey && now - publishedAt < 1000) return;
       publishedKey = key;
       publishedAt = now;
@@ -237,7 +300,7 @@
         type: 'tracks',
         remote,
         local,
-        hearing: audioCtx?.state === 'running',
+        hearing,
       }, '*');
     }
 
@@ -351,8 +414,8 @@
       if (data.type === 'arm') {
         mode = 'tracks';
         sessionId = data.sessionId || Date.now();
-        audioCtx?.resume().catch(() => {});
-        publishCounts();
+        context();
+        publishCounts(true);
         return;
       }
       if (data.type === 'speakers') {
@@ -376,6 +439,10 @@
       if (audioCtx?.state === 'suspended') audioCtx.resume().catch(() => {});
       if (mode === 'tracks') {
         for (const info of tracks.values()) {
+          if (info.sink) {
+            mountSink(info.sink);
+            if (info.sink.paused) info.sink.play().catch(() => {});
+          }
           if (info.track.readyState !== 'live') {
             ctl.noteSilence(info.id, now);
             continue;

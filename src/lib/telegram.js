@@ -101,15 +101,23 @@ export async function sendMessage(token, chatId, text, options = {}) {
   return last;
 }
 
-export async function sendDocument(token, chatId, { filename, bytes, mime, caption }) {
+export async function sendDocument(token, chatId, { filename, bytes, mime, caption, html }) {
+  const bot = String(token || '').trim();
+  const chat = String(chatId || '').trim();
+  if (!bot || !chat) throw new Error('Telegram не настроен');
   const form = new FormData();
-  form.append('chat_id', String(chatId));
+  form.append('chat_id', chat);
   if (caption) {
-    form.append('caption', caption.slice(0, 1024));
-    form.append('parse_mode', 'HTML');
+    form.append('caption', String(caption).slice(0, 1024));
+    if (html) form.append('parse_mode', 'HTML');
   }
-  form.append('document', new Blob([bytes], { type: mime || 'application/octet-stream' }), filename);
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+  const name = filename || 'file';
+  const type = mime || 'application/octet-stream';
+  const file = typeof File === 'function'
+    ? new File([bytes], name, { type })
+    : new Blob([bytes], { type });
+  form.append('document', file, name);
+  const response = await fetch(`https://api.telegram.org/bot${bot}/sendDocument`, {
     method: 'POST',
     body: form,
   });

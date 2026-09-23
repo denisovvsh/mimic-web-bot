@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldFallbackToMixed } from '../src/lib/fallback.js';
+import { levelsReadable, shouldFallbackToMixed } from '../src/lib/fallback.js';
 
 test('до 8 секунд смешанный захват не включается', () => {
   assert.equal(shouldFallbackToMixed({
@@ -33,6 +33,11 @@ test('треки есть, но уровень не читается — это 
     hearing: true,
     elapsedMs: 8000,
   }), false);
+});
+
+test('тишина на дорожке не значит, что уровень не читается', () => {
+  assert.equal(levelsReadable({ contextRunning: false }), false);
+  assert.equal(levelsReadable({ contextRunning: true }), true);
 });
 
 test('один удалённый трек и несколько плиток — смешанный звук сервера', () => {

@@ -1,3 +1,4 @@
+import { recordingButtons } from '../lib/audio-chunk.js';
 import { mergeSettings, MONITOR_FIELDS, migrateRootMonitor, adoptRootAi, settingsForPage, DEFAULT_SETTINGS } from '../lib/defaults.js';
 import { isTelemostUrl, pageKey, samePage } from '../lib/watch.js';
 
@@ -25,6 +26,7 @@ let boundPageKey = '';
 let currentWatch = null;
 let recordingOn = false;
 let recordingTabId = null;
+let telemostAllowed = false;
 
 document.querySelector('#add-feature').addEventListener('click', () => {
   addFeature('', '');
@@ -40,7 +42,16 @@ document.querySelector('#macro-clear').addEventListener('click', async () => {
   renderMacro([]);
   setStatus('Макрос очищен');
 });
-document.querySelector('#rec-start').addEventListener('click', startRecording);
+document.querySelector('#rec-start').addEventListener('click', () => {
+  if (recordingOn) return;
+  let capture = Promise.resolve('');
+  try {
+    capture = captureTabStream(boundTabId, boundUrl);
+  } catch (error) {
+    setStatus(`Захват вкладки: ${error.message}. Дорожки WebRTC всё равно пишутся.`);
+  }
+  startRecording(boundTabId, capture);
+});
 document.querySelector('#rec-stop').addEventListener('click', () => {
   if (!recordingOn) return;
   if (!window.confirm('Остановить запись созвона?')) return;
@@ -74,6 +85,7 @@ featuresNode.addEventListener('click', (event) => {
 });
 
 chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === 'status') setStatus(message.text || '');
   if (message?.type === 'indicators') {
     currentWatch = message.monitorWatch || null;
     recordingOn = Boolean(message.recordingOn);
@@ -292,13 +304,19 @@ async function refreshActiveTab() {
   paintIndicators();
 }
 
+function applyRecButtons() {
+  const buttons = recordingButtons({ allowed: telemostAllowed, recordingOn });
+  const start = document.getElementById('rec-start');
+  if (start) start.disabled = buttons.startDisabled;
+  const stop = document.getElementById('rec-stop');
+  if (stop) stop.disabled = buttons.stopDisabled;
+}
+
 function syncTelemostControls(url = boundUrl) {
   const allowed = isTelemostUrl(url);
+  telemostAllowed = allowed;
   for (const button of document.querySelectorAll('#pane-telemost [data-pick]')) button.disabled = !allowed;
-  const start = document.getElementById('rec-start');
-  if (start) start.disabled = !allowed;
-  const stop = document.getElementById('rec-stop');
-  if (stop) stop.disabled = !recordingOn;
+  applyRecButtons();
   const hint = document.getElementById('telemost-gate');
   if (hint) hint.hidden = allowed;
 }
@@ -370,17 +388,21 @@ async function withTab(type) {
   if (response?.ok === false) setStatus(response.error || 'Команда не выполнена');
 }
 
-async function startRecording() {
-  await save();
-  const tab = await activeTab();
-  if (!tab?.id || !isTelemostUrl(tab.url)) return;
-  let streamId = '';
-  try {
-    streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
-  } catch (error) {
+function captureTabStream(tabId, url) {
+  if (!tabId || !isTelemostUrl(url)) return Promise.resolve('');
+  return chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }).catch((error) => {
     setStatus(`Захват вкладки: ${error.message}. Дорожки WebRTC всё равно пишутся.`);
-  }
-  const response = await send({ type: 'recording-start', tabId: tab.id, streamId });
+    return '';
+  });
+}
+
+async function startRecording(tabId, capture) {
+  await save();
+  if (!tabId) return;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab?.id || !isTelemostUrl(tab.url)) return;
+  const streamId = await capture;
+  const response = await send({ type: 'recording-start', tabId: tab.id, streamId: streamId || '' });
   if (response?.ok === false) setStatus(response.error || 'Запись не запустилась');
 }
 
@@ -394,7 +416,13 @@ function send(message) {
   return chrome.runtime.sendMessage(message);
 }
 
-function setStatus() {}
+function setStatus(text) {
+  const node = document.getElementById('panel-status');
+  if (!node) return;
+  const value = text || '';
+  node.hidden = !value;
+  node.textContent = value;
+}
 
 const INDICATOR_LABEL = {
   on: 'Включено',
@@ -408,8 +436,7 @@ function paintIndicators() {
     document.querySelector('#rec-indicator'),
     recordingOn ? 'on' : 'off',
   );
-  const stop = document.getElementById('rec-stop');
-  if (stop) stop.disabled = !recordingOn;
+  applyRecButtons();
   checkLiveSelectors().catch(() => {});
 }
 
